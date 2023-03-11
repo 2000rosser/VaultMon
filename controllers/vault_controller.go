@@ -90,7 +90,7 @@ func (r *VaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// 	logger.Info("VAULT_ANNOTATIONS=" + key + "=" + value)
 	// }
 
-	//*****************************use this if the operator is outside inside the cluster******************************
+	//*****************************use this if the operator is ran outside the cluster******************************
 
 	//path to the kubeconfig file
 	kubeconfig := filepath.Join(
@@ -112,7 +112,7 @@ func (r *VaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		panic(err.Error())
 	}
 
-	//******************************use this if the operator is outside inside the cluster******************************
+	//******************************use this if the operator is ran outside the cluster******************************
 
 	//*****************************use this if the operator is ran inside the cluster******************************
 

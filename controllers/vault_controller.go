@@ -18,14 +18,33 @@ package controllers
 
 import (
 	"context"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
-	//vaultbanzaicloudcomv1alpha1 "github.com/2000rosser/FYP.git/api/v1alpha1"
+
+	"os"
+	"path/filepath"
+
+	//import metav1
+	//"k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	//import metav1
+	//"k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	//import corev1
+	//import clientcmd
+	//import rest
+	//import corev1
+	//import strconv
+	//"strconv"
 )
 
 // VaultReconciler reconciles a Vault object
@@ -37,6 +56,7 @@ type VaultReconciler struct {
 //+kubebuilder:rbac:groups=vault.banzaicloud.com,resources=vaults,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=vault.banzaicloud.com,resources=vaults/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=vault.banzaicloud.com,resources=vaults/finalizers,verbs=update
+//+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -58,8 +78,81 @@ func (r *VaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := r.Get(ctx, req.NamespacedName, &u); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+
+	logger.Info("Reconciling Vault")
+
 	logger.Info("VAULT_UID=" + string(u.GetUID()))
-	return ctrl.Result{}, nil
+	logger.Info("VAULT_NAME=" + string(u.GetName()))
+	logger.Info("VAULT_NAMESPACE=" + string(u.GetNamespace()))
+
+	// annotations := u.GetAnnotations()
+	// for key, value := range annotations {
+	// 	logger.Info("VAULT_ANNOTATIONS=" + key + "=" + value)
+	// }
+
+	//*****************************use this if the operator is outside inside the cluster******************************
+
+	//path to the kubeconfig file
+	kubeconfig := filepath.Join(
+		os.Getenv("HOME"), ".kube", "config",
+	)
+
+	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	pod, err := clientset.CoreV1().Pods("default").Get(ctx, "vault-0", metav1.GetOptions{})
+	if err != nil {
+		panic(err.Error())
+	}
+
+	//******************************use this if the operator is outside inside the cluster******************************
+
+	//*****************************use this if the operator is ran inside the cluster******************************
+
+	// //instance of the kubernetes client
+	// config, err := rest.InClusterConfig()
+	// if err != nil {
+	// 	panic(err.Error())
+	// }
+
+	// clientset, err := kubernetes.NewForConfig(config)
+	// if err != nil {
+	// 	panic(err.Error())
+	// }
+
+	// pod, err := clientset.CoreV1().Pods("default").Get(ctx, "vault-0", metav1.GetOptions{})
+	// if err != nil {
+	// 	panic(err.Error())
+	// }
+
+	//******************************use this if the operator is ran inside the cluster******************************
+
+	podIP := pod.Status.PodIP
+	logger.Info("VAULT_POD_IP=" + podIP)
+
+	//vault pod data directory
+	dataDir, err := clientset.CoreV1().Pods("default").Get(ctx, "vault-0", metav1.GetOptions{})
+	if err != nil {
+		panic(err.Error())
+	}
+
+	//labels from data directory
+	dataDirLabels := dataDir.GetLabels()
+	for key, value := range dataDirLabels {
+		logger.Info("VAULT_DATA_DIR_LABELS=" + key + "=" + value)
+	}
+
+	//reconcile every 10 seconds
+
+	nextRun := time.Now().Add(10 * time.Second)
+	return ctrl.Result{RequeueAfter: nextRun.Sub(time.Now())}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

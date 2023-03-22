@@ -18,8 +18,13 @@ package controllers
 
 import (
 	"context"
-	"time"
+	"strconv"
 
+	"os"
+	"path/filepath"
+
+	corev1 "k8s.io/api/core/v1"
+	//	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -29,42 +34,56 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"os"
-	"path/filepath"
-
-	//import metav1
-	//"k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	//import metav1
-	//"k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	//import corev1
-	//import clientcmd
-	//import rest
-	//import corev1
-	//import strconv
-	//"strconv"
 )
+
+// func (r *VaultReconciler) getOrCreateConfigMap(ctx context.Context, namespace string, name string) (*v1.ConfigMap, error) {
+// 	configMap := &v1.ConfigMap{}
+// 	err := r.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, configMap)
+// 	if err != nil {
+// 		if errors.IsNotFound(err) {
+// 			// Create a new ConfigMap if it doesn't exist
+// 			configMap = &v1.ConfigMap{
+// 				ObjectMeta: metav1.ObjectMeta{
+// 					Name:      name,
+// 					Namespace: namespace,
+// 				},
+// 				Data: make(map[string]string),
+// 			}
+// 			if err := r.Client.Create(ctx, configMap); err != nil {
+// 				return nil, err
+// 			}
+// 		} else {
+// 			return nil, err
+// 		}
+// 	}
+// 	return configMap, nil
+// }
+
+//var globalConfigMapData map[string]string
 
 // VaultReconciler reconciles a Vault object
 type VaultReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme              *runtime.Scheme
+	GlobalConfigMapData map[string]string
+}
+
+// Constructor function for VaultReconciler
+func NewVaultReconciler(client client.Client, scheme *runtime.Scheme) *VaultReconciler {
+	return &VaultReconciler{
+		Client:              client,
+		Scheme:              scheme,
+		GlobalConfigMapData: make(map[string]string),
+	}
 }
 
 //+kubebuilder:rbac:groups=vault.banzaicloud.com,resources=vaults,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=vault.banzaicloud.com,resources=vaults/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=vault.banzaicloud.com,resources=vaults/finalizers,verbs=update
 //+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the Vault object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.13.0/pkg/reconcile
 func (r *VaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -81,9 +100,51 @@ func (r *VaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	logger.Info("Reconciling Vault")
 
-	logger.Info("VAULT_UID=" + string(u.GetUID()))
-	logger.Info("VAULT_NAME=" + string(u.GetName()))
-	logger.Info("VAULT_NAMESPACE=" + string(u.GetNamespace()))
+	configMapNamespace := u.GetNamespace()
+	configMapName := "vault-configmap"
+
+	configMap := &corev1.ConfigMap{}
+	err := r.Client.Get(ctx, client.ObjectKey{Namespace: configMapNamespace, Name: configMapName}, configMap)
+
+	// initialize the configmap if its empty
+	if len(configMap.Data) == 0 {
+		configMap.Data = make(map[string]string)
+
+		//get the vault info and store it in the configmap
+		configMap.Data["vault-name"] = u.GetName()
+		logger.Info("VAULT_NAME=" + string(u.GetName()))
+
+		configMap.Data["vault-uid"] = string(u.GetUID())
+		logger.Info("VAULT_UID=" + string(u.GetUID()))
+
+		configMap.Data["vault-namespace"] = u.GetNamespace()
+		logger.Info("VAULT_NAMESPACE=" + string(u.GetNamespace()))
+
+		if err := r.Client.Update(ctx, configMap); err != nil {
+			logger.Error(err, "Failed to update ConfigMap")
+			return ctrl.Result{}, err
+		}
+		logger.Info("ConfigMap initialized")
+	}
+
+	// if info is different update the configmap
+	if configMap.Data["vault-uid"] != string(u.GetUID()) {
+		configMap.Data["vault-uid"] = string(u.GetUID())
+		logger.Info("vault-uid changed, updating ConfigMap")
+		if err := r.Client.Update(ctx, configMap); err != nil {
+			logger.Error(err, "Failed to update ConfigMap")
+			return ctrl.Result{}, err
+		}
+	}
+
+	if configMap.Data["vault-namespace"] != u.GetNamespace() {
+		configMap.Data["vault-namespace"] = u.GetNamespace()
+		logger.Info("vault-namespace changed, updating ConfigMap")
+		if err := r.Client.Update(ctx, configMap); err != nil {
+			logger.Error(err, "Failed to update ConfigMap")
+			return ctrl.Result{}, err
+		}
+	}
 
 	// annotations := u.GetAnnotations()
 	// for key, value := range annotations {
@@ -149,13 +210,18 @@ func (r *VaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		logger.Info("VAULT_DATA_DIR_LABELS=" + key + "=" + value)
 	}
 
-	//reconcile every 10 seconds
+	logger.Info("VAULT_SECRETS=" + strconv.Itoa(10))
 
-	nextRun := time.Now().Add(10 * time.Second)
-	return ctrl.Result{RequeueAfter: nextRun.Sub(time.Now())}, nil
+	// nextRun := time.Now().Add(10 * time.Second)
+	// return ctrl.Result{RequeueAfter: nextRun.Sub(time.Now())}, nil
+
+	return ctrl.Result{}, nil
 }
 
+//create a function that watches for changes in the vault pod
+
 // SetupWithManager sets up the controller with the Manager.
+
 func (r *VaultReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	u := unstructured.Unstructured{Object: map[string]interface{}{}}
 	u.SetGroupVersionKind(schema.GroupVersionKind{
@@ -163,5 +229,6 @@ func (r *VaultReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Group:   "vault.banzaicloud.com",
 		Version: "v1alpha1",
 	})
-	return ctrl.NewControllerManagedBy(mgr).For(&u).Complete(r)
+
+	return ctrl.NewControllerManagedBy(mgr).For(&u).Complete(NewVaultReconciler(mgr.GetClient(), mgr.GetScheme()))
 }

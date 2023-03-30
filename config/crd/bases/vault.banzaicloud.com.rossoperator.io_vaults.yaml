@@ -35,14 +35,38 @@ spec:
           spec:
             description: VaultSpec defines the desired state of Vault
             properties:
+              endpoints:
+                items:
+                  type: string
+                type: array
+              ingress:
+                type: string
+              ip:
+                type: string
+              labels:
+                additionalProperties:
+                  type: string
+                type: object
               name:
                 description: Foo is an example field of Vault. Edit vault_types.go
                   to remove/update Foo string `json:"foo,omitempty"`
                 type: string
               namespace:
                 type: string
+              replicas:
+                format: int32
+                type: integer
+              secrets:
+                format: int64
+                type: integer
+              status:
+                type: string
               uid:
                 type: string
+              volumes:
+                items:
+                  type: string
+                type: array
             type: object
           status:
             description: VaultStatus defines the observed state of Vault

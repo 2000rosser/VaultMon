@@ -36,6 +36,11 @@ type VaultSpec struct {
 	VaultIp        string            `json:"ip,omitempty"`
 	VaultLabels    map[string]string `json:"labels,omitempty"`
 	VaultSecrets   int64             `json:"secrets,omitempty"`
+	VaultReplicas  int32             `json:"replicas,omitempty"`
+	VaultEndpoints []string          `json:"endpoints,omitempty"`
+	VaultStatus    string            `json:"status,omitempty"`
+	VaultVolumes   []string          `json:"volumes,omitempty"`
+	VaultIngress   string            `json:"ingress,omitempty"`
 }
 
 // VaultStatus defines the observed state of Vault

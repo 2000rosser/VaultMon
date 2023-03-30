@@ -1,0 +1,12 @@
+apiVersion: rossoperator.io/v1alpha1
+kind: VaultMon
+metadata:
+  labels:
+    app.kubernetes.io/name: vaultmon
+    app.kubernetes.io/instance: vaultmon-sample
+    app.kubernetes.io/part-of: vaultmon
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: vaultmon
+  name: vaultmon-sample
+spec:
+  # TODO(user): Add fields here

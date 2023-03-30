@@ -30,6 +30,12 @@ type VaultSpec struct {
 
 	// Foo is an example field of Vault. Edit vault_types.go to remove/update
 	//Foo string `json:"foo,omitempty"`
+	VaultName      string            `json:"name,omitempty"`
+	VaultUid       string            `json:"uid,omitempty"`
+	VaultNamespace string            `json:"namespace,omitempty"`
+	VaultIp        string            `json:"ip,omitempty"`
+	VaultLabels    map[string]string `json:"labels,omitempty"`
+	VaultSecrets   int64             `json:"secrets,omitempty"`
 }
 
 // VaultStatus defines the observed state of Vault

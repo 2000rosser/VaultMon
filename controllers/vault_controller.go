@@ -23,7 +23,6 @@ import (
 	"os"
 	"path/filepath"
 
-	corev1 "k8s.io/api/core/v1"
 	//	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -34,6 +33,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"k8s.io/apimachinery/pkg/api/errors"
+
+	vaultbanzaicloudcomv1alpha1 "github.com/2000rosser/FYP.git/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -100,51 +102,79 @@ func (r *VaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	logger.Info("Reconciling Vault")
 
-	configMapNamespace := u.GetNamespace()
-	configMapName := "vault-configmap"
+	// configMapNamespace := u.GetNamespace()
+	// configMapName := "vault-configmap"
 
-	configMap := &corev1.ConfigMap{}
-	err := r.Client.Get(ctx, client.ObjectKey{Namespace: configMapNamespace, Name: configMapName}, configMap)
+	// configMap := &corev1.ConfigMap{}
+	// err := r.Client.Get(ctx, client.ObjectKey{Namespace: configMapNamespace, Name: configMapName}, configMap)
 
-	// initialize the configmap if its empty
-	if len(configMap.Data) == 0 {
-		configMap.Data = make(map[string]string)
+	// // initialize the configmap if its empty
+	// if len(configMap.Data) == 0 {
+	// 	configMap.Data = make(map[string]string)
 
-		//get the vault info and store it in the configmap
-		configMap.Data["vault-name"] = u.GetName()
-		logger.Info("VAULT_NAME=" + string(u.GetName()))
+	// 	//get the vault info and store it in the configmap
+	// 	configMap.Data["vault-name"] = u.GetName()
+	// 	logger.Info("VAULT_NAME=" + string(u.GetName()))
 
-		configMap.Data["vault-uid"] = string(u.GetUID())
-		logger.Info("VAULT_UID=" + string(u.GetUID()))
+	// 	configMap.Data["vault-uid"] = string(u.GetUID())
+	// 	logger.Info("VAULT_UID=" + string(u.GetUID()))
 
-		configMap.Data["vault-namespace"] = u.GetNamespace()
-		logger.Info("VAULT_NAMESPACE=" + string(u.GetNamespace()))
+	// 	configMap.Data["vault-namespace"] = u.GetNamespace()
+	// 	logger.Info("VAULT_NAMESPACE=" + string(u.GetNamespace()))
 
-		if err := r.Client.Update(ctx, configMap); err != nil {
-			logger.Error(err, "Failed to update ConfigMap")
+	// 	if err := r.Client.Update(ctx, configMap); err != nil {
+	// 		logger.Error(err, "Failed to update ConfigMap")
+	// 		return ctrl.Result{}, err
+	// 	}
+	// 	logger.Info("ConfigMap initialized")
+	// }
+
+	logger.Info("Creating VaultData")
+
+	vaultData := &vaultbanzaicloudcomv1alpha1.Vault{}
+	//create a vault object if it doesn't exist
+	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: req.Name}, vaultData); err != nil {
+		if errors.IsNotFound(err) {
+			vaultData = &vaultbanzaicloudcomv1alpha1.Vault{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      req.Name,
+					Namespace: req.Namespace,
+				},
+				Spec: vaultbanzaicloudcomv1alpha1.VaultSpec{
+					// VaultName:      configMap.Data["vault-name"],
+					// VaultUID:       configMap.Data["vault-uid"],
+					// VaultNamespace: configMap.Data["vault-namespace"],
+				},
+			}
+			if err := r.Client.Create(ctx, vaultData); err != nil {
+				logger.Error(err, "Failed to create VaultData")
+				return ctrl.Result{}, err
+			}
+			logger.Info("VaultData created")
+		} else {
+			logger.Error(err, "Failed to get VaultData")
 			return ctrl.Result{}, err
 		}
-		logger.Info("ConfigMap initialized")
 	}
 
 	// if info is different update the configmap
-	if configMap.Data["vault-uid"] != string(u.GetUID()) {
-		configMap.Data["vault-uid"] = string(u.GetUID())
-		logger.Info("vault-uid changed, updating ConfigMap")
-		if err := r.Client.Update(ctx, configMap); err != nil {
-			logger.Error(err, "Failed to update ConfigMap")
-			return ctrl.Result{}, err
-		}
-	}
+	// if configMap.Data["vault-uid"] != string(u.GetUID()) {
+	// 	configMap.Data["vault-uid"] = string(u.GetUID())
+	// 	logger.Info("vault-uid changed, updating ConfigMap")
+	// 	if err := r.Client.Update(ctx, configMap); err != nil {
+	// 		logger.Error(err, "Failed to update ConfigMap")
+	// 		return ctrl.Result{}, err
+	// 	}
+	// }
 
-	if configMap.Data["vault-namespace"] != u.GetNamespace() {
-		configMap.Data["vault-namespace"] = u.GetNamespace()
-		logger.Info("vault-namespace changed, updating ConfigMap")
-		if err := r.Client.Update(ctx, configMap); err != nil {
-			logger.Error(err, "Failed to update ConfigMap")
-			return ctrl.Result{}, err
-		}
-	}
+	// if configMap.Data["vault-namespace"] != u.GetNamespace() {
+	// 	configMap.Data["vault-namespace"] = u.GetNamespace()
+	// 	logger.Info("vault-namespace changed, updating ConfigMap")
+	// 	if err := r.Client.Update(ctx, configMap); err != nil {
+	// 		logger.Error(err, "Failed to update ConfigMap")
+	// 		return ctrl.Result{}, err
+	// 	}
+	// }
 
 	// annotations := u.GetAnnotations()
 	// for key, value := range annotations {
@@ -195,8 +225,19 @@ func (r *VaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	//******************************use this if the operator is ran inside the cluster******************************
 
-	podIP := pod.Status.PodIP
-	logger.Info("VAULT_POD_IP=" + podIP)
+	vaultData.Spec.VaultName = u.GetName()
+	//log the vault name using the vaultData object
+	logger.Info("VAULT_NAME=" + string(vaultData.Spec.VaultName))
+
+	vaultData.Spec.VaultNamespace = u.GetNamespace()
+	//log the vault namespace using the vaultData object
+	logger.Info("VAULT_NAMESPACE=" + string(vaultData.Spec.VaultNamespace))
+
+	vaultData.Spec.VaultIp = pod.Status.PodIP
+	logger.Info("VAULT_POD_IP=" + vaultData.Spec.VaultIp)
+
+	vaultData.Spec.VaultUid = string(u.GetUID())
+	logger.Info("VAULT_UID=" + vaultData.Spec.VaultUid)
 
 	//vault pod data directory
 	dataDir, err := clientset.CoreV1().Pods("default").Get(ctx, "vault-0", metav1.GetOptions{})

@@ -35,10 +35,14 @@ spec:
           spec:
             description: VaultMonSpec defines the desired state of VaultMon
             properties:
+              cpuUsage:
+                type: string
               endpoints:
                 items:
                   type: string
                 type: array
+              image:
+                type: string
               ingress:
                 type: string
               ip:
@@ -47,6 +51,8 @@ spec:
                 additionalProperties:
                   type: string
                 type: object
+              memUsage:
+                type: string
               name:
                 type: string
               namespace:

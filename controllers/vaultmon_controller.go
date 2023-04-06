@@ -36,6 +36,10 @@ import (
 
 	rossoperatoriov1alpha1 "github.com/2000rosser/FYP.git/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
+
+	"fmt"
 )
 
 // VaultMonReconciler reconciles a VaultMon object
@@ -56,16 +60,10 @@ func NewVaultReconciler(client client.Client, scheme *runtime.Scheme) *VaultMonR
 //+kubebuilder:rbac:groups=vault.banzaicloud.com,resources=vaults/finalizers,verbs=update
 //+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="metrics.k8s.io",resources=pods,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=serviceaccounts;deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the VaultMon object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.13.0/pkg/reconcile
 func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := ctrllog.FromContext(ctx)
 	u := unstructured.Unstructured{}
@@ -79,6 +77,22 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	logger.Info("Reconciling Vault")
+
+	// ingressList := &v1.IngressList{}
+	// labelSelector := labels.SelectorFromSet(map[string]string{"vault_cr": "vault"})
+	// if err := r.Client.List(ctx, ingressList, client.InNamespace("default"), client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
+	// 	logger.Error(err, "Failed to list Ingress resources")
+	// 	return ctrl.Result{}, err
+	// }
+	// logger.Info("Ingress list fetched", "ingressList", ingressList)
+
+	// var vaultIngress *v1.Ingress
+	// if len(ingressList.Items) > 0 {
+	// 	vaultIngress = &ingressList.Items[0]
+	// } else {
+	// 	logger.Info("No Ingress found for the Vault instance")
+	// 	return ctrl.Result{}, nil
+	// }
 
 	//*****************************use this if the operator is ran outside the cluster******************************
 
@@ -125,9 +139,25 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	//******************************use this if the operator is ran inside the cluster******************************
 
 	logger.Info("Creating VaultData")
+	logger.Info("Getting Vault Metrics")
+
+	metricsClientset, err := metricsclientset.NewForConfig(config)
+	if err != nil {
+		logger.Info("Error creating metrics clientset: " + err.Error())
+	}
+
+	vaultMetrics, err := metricsClientset.MetricsV1beta1().PodMetricses("default").Get(ctx, "vault-0", metav1.GetOptions{})
+	if err != nil {
+		logger.Info("Error getting vault metrics: " + err.Error())
+	}
+
+	deployment, err := clientset.AppsV1().Deployments(u.GetNamespace()).Get(ctx, "vault-configurer", metav1.GetOptions{})
+	if err != nil {
+		logger.Error(err, "Failed to get deployment")
+		return ctrl.Result{}, err
+	}
 
 	vaultData := &rossoperatoriov1alpha1.VaultMon{}
-	//create a vault object if it doesn't exist
 	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: req.Name}, vaultData); err != nil {
 		if errors.IsNotFound(err) {
 			vaultData = &rossoperatoriov1alpha1.VaultMon{
@@ -145,6 +175,14 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					VaultIp: pod.Status.PodIP,
 
 					VaultStatus: string(pod.Status.Conditions[0].Type),
+
+					VaultMemUsage: vaultMetrics.Containers[0].Usage.Memory().String(),
+
+					VaultCPUUsage: vaultMetrics.Containers[0].Usage.Cpu().String(),
+
+					VaultReplicas: deployment.Status.Replicas,
+
+					VaultImage: deployment.Spec.Template.Spec.Containers[0].Image,
 				},
 			}
 			if err := r.Client.Create(ctx, vaultData); err != nil {
@@ -157,13 +195,16 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			logger.Info("VAULT_POD_IP=" + vaultData.Spec.VaultIp)
 			logger.Info("VAULT_UID=" + vaultData.Spec.VaultUid)
 			logger.Info("VAULT_STATUS=" + vaultData.Spec.VaultStatus)
+			logger.Info("VAULT_MEMORY_USAGE=" + vaultData.Spec.VaultMemUsage)
+			logger.Info("VAULT_CPU_USAGE=" + vaultData.Spec.VaultCPUUsage)
+			logger.Info("VAULT_REPLICAS=" + string(vaultData.Spec.VaultReplicas))
+			logger.Info("VAULT_IMAGE=" + vaultData.Spec.VaultImage)
 		} else {
 			logger.Error(err, "Failed to get VaultData")
 			return ctrl.Result{}, err
 		}
 	}
 
-	//check if the current value of name is the same as the one in the vault object
 	if vaultData.Spec.VaultName != u.GetName() {
 		vaultData.Spec.VaultName = u.GetName()
 		if err := r.Client.Update(ctx, vaultData); err != nil {
@@ -208,6 +249,45 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 		logger.Info("VaultData PodStatus updated to " + vaultData.Spec.VaultStatus)
 	}
+
+	if vaultData.Spec.VaultMemUsage != vaultMetrics.Containers[0].Usage.Memory().String() {
+		vaultData.Spec.VaultMemUsage = vaultMetrics.Containers[0].Usage.Memory().String()
+		if err := r.Client.Update(ctx, vaultData); err != nil {
+			logger.Error(err, "Failed to update VaultData")
+			return ctrl.Result{}, err
+		}
+		logger.Info("VaultData MemoryUsage updated to " + vaultData.Spec.VaultMemUsage)
+	}
+
+	if vaultData.Spec.VaultCPUUsage != vaultMetrics.Containers[0].Usage.Cpu().String() {
+		vaultData.Spec.VaultCPUUsage = vaultMetrics.Containers[0].Usage.Cpu().String()
+		if err := r.Client.Update(ctx, vaultData); err != nil {
+			logger.Error(err, "Failed to update VaultData")
+			return ctrl.Result{}, err
+		}
+		logger.Info("VaultData CPUUsage updated to " + vaultData.Spec.VaultCPUUsage)
+	}
+
+	if vaultData.Spec.VaultReplicas != deployment.Status.Replicas {
+		vaultData.Spec.VaultReplicas = deployment.Status.Replicas
+		if err := r.Client.Update(ctx, vaultData); err != nil {
+			logger.Error(err, "Failed to update VaultData")
+			return ctrl.Result{}, err
+		}
+		logger.Info("VaultData Replicas updated to " + string(vaultData.Spec.VaultReplicas))
+	}
+
+	if vaultData.Spec.VaultImage != deployment.Spec.Template.Spec.Containers[0].Image {
+		vaultData.Spec.VaultImage = deployment.Spec.Template.Spec.Containers[0].Image
+		if err := r.Client.Update(ctx, vaultData); err != nil {
+			logger.Error(err, "Failed to update VaultData")
+			return ctrl.Result{}, err
+		}
+		logger.Info("VaultData Image updated to " + vaultData.Spec.VaultImage)
+	}
+
+	annotations := u.GetAnnotations()
+	logger.Info("Vault Annotations: " + fmt.Sprintf("%v", annotations))
 
 	//vault pod data directory
 	// dataDir, err := clientset.CoreV1().Pods("default").Get(ctx, "vault-0", metav1.GetOptions{})

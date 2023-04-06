@@ -39,6 +39,9 @@ type VaultMonSpec struct {
 	VaultStatus    string            `json:"status,omitempty"`
 	VaultVolumes   []string          `json:"volumes,omitempty"`
 	VaultIngress   string            `json:"ingress,omitempty"`
+	VaultCPUUsage  string            `json:"cpuUsage,omitempty"`
+	VaultMemUsage  string            `json:"memUsage,omitempty"`
+	VaultImage     string            `json:"image,omitempty"`
 }
 
 // VaultMonStatus defines the observed state of VaultMon

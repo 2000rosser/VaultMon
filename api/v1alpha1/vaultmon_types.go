@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -28,26 +29,28 @@ type VaultMonSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	VaultName      string            `json:"name,omitempty"`
-	VaultUid       string            `json:"uid,omitempty"`
-	VaultNamespace string            `json:"namespace,omitempty"`
-	VaultIp        string            `json:"ip,omitempty"`
-	VaultLabels    map[string]string `json:"labels,omitempty"`
-	VaultSecrets   int64             `json:"secrets,omitempty"`
-	VaultReplicas  int32             `json:"replicas,omitempty"`
-	VaultEndpoints []string          `json:"endpoints,omitempty"`
-	VaultStatus    string            `json:"status,omitempty"`
-	VaultVolumes   []string          `json:"volumes,omitempty"`
-	VaultIngress   string            `json:"ingress,omitempty"`
-	VaultCPUUsage  string            `json:"cpuUsage,omitempty"`
-	VaultMemUsage  string            `json:"memUsage,omitempty"`
-	VaultImage     string            `json:"image,omitempty"`
+	VaultName      string               `json:"name,omitempty"`
+	VaultUid       string               `json:"uid,omitempty"`
+	VaultNamespace string               `json:"namespace,omitempty"`
+	VaultIp        string               `json:"ip,omitempty"`
+	VaultLabels    map[string]string    `json:"labels,omitempty"`
+	VaultSecrets   int64                `json:"secrets,omitempty"`
+	VaultReplicas  int32                `json:"replicas,omitempty"`
+	VaultEndpoints []string             `json:"endpoints,omitempty"`
+	VaultStatus    []v1.ContainerStatus `json:"status,omitempty"`
+	VaultVolumes   []string             `json:"volumes,omitempty"`
+	VaultIngress   string               `json:"ingress,omitempty"`
+	VaultCPUUsage  string               `json:"cpuUsage,omitempty"`
+	VaultMemUsage  string               `json:"memUsage,omitempty"`
+	VaultImage     string               `json:"image,omitempty"`
 }
 
 // VaultMonStatus defines the observed state of VaultMon
 type VaultMonStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+
+	ReplicaHealth string `json:"replicaHealth,omitempty"`
 }
 
 //+kubebuilder:object:root=true

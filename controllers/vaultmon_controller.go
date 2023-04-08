@@ -18,28 +18,23 @@ package controllers
 
 import (
 	"context"
-
+	"fmt"
 	"os"
 	"path/filepath"
 
-	//	"k8s.io/apimachinery/pkg/api/errors"
+	rossoperatoriov1alpha1 "github.com/2000rosser/FYP.git/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
-
-	"k8s.io/apimachinery/pkg/api/errors"
-
-	rossoperatoriov1alpha1 "github.com/2000rosser/FYP.git/api/v1alpha1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
-
-	"fmt"
+	// corev1 "k8s.io/api/core/v1"
 )
 
 // VaultMonReconciler reconciles a VaultMon object
@@ -157,6 +152,13 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	//other image
+	image, err := clientset.CoreV1().Pods("default").Get(ctx, "vault-0", metav1.GetOptions{})
+	if err != nil {
+		panic(err.Error())
+	}
+	logger.Info("VAULT_IMAGE=" + image.Spec.Containers[0].Image)
+
 	vaultData := &rossoperatoriov1alpha1.VaultMon{}
 	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: req.Name}, vaultData); err != nil {
 		if errors.IsNotFound(err) {
@@ -174,7 +176,7 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 					VaultIp: pod.Status.PodIP,
 
-					VaultStatus: string(pod.Status.Conditions[0].Type),
+					VaultStatus: pod.Status.ContainerStatuses,
 
 					VaultMemUsage: vaultMetrics.Containers[0].Usage.Memory().String(),
 
@@ -194,15 +196,46 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			logger.Info("VAULT_NAMESPACE=" + string(vaultData.Spec.VaultNamespace))
 			logger.Info("VAULT_POD_IP=" + vaultData.Spec.VaultIp)
 			logger.Info("VAULT_UID=" + vaultData.Spec.VaultUid)
-			logger.Info("VAULT_STATUS=" + vaultData.Spec.VaultStatus)
+			for _, status := range vaultData.Spec.VaultStatus {
+				logger.Info("Container Name: " + status.Name)
+				logger.Info("Container Ready: " + fmt.Sprintf("%t", status.Ready))
+				logger.Info("Container Liveness: " + fmt.Sprintf("%t", status.State.Running != nil))
+			}
 			logger.Info("VAULT_MEMORY_USAGE=" + vaultData.Spec.VaultMemUsage)
 			logger.Info("VAULT_CPU_USAGE=" + vaultData.Spec.VaultCPUUsage)
 			logger.Info("VAULT_REPLICAS=" + string(vaultData.Spec.VaultReplicas))
 			logger.Info("VAULT_IMAGE=" + vaultData.Spec.VaultImage)
+
 		} else {
 			logger.Error(err, "Failed to get VaultData")
 			return ctrl.Result{}, err
 		}
+	}
+
+	vaultFinalizer := "vault.banzaicloud.com/finalizer2"
+
+	logger.Info("Vault finalizers" + fmt.Sprintf("%v", u.GetFinalizers()))
+
+	if !containsString(u.GetFinalizers(), vaultFinalizer) {
+		u.SetFinalizers(append(u.GetFinalizers(), vaultFinalizer))
+		if err := r.Update(ctx, &u); err != nil {
+			logger.Error(err, "Failed to add finalizer to Vault CRD")
+			return ctrl.Result{}, err
+		}
+		logger.Info("Added finalizer to Vault CRD")
+	}
+
+	if !u.GetDeletionTimestamp().IsZero() {
+		if containsString(u.GetFinalizers(), vaultFinalizer) {
+			logger.Info("Deleting VaultData")
+			u.SetFinalizers(removeString(u.GetFinalizers(), vaultFinalizer))
+			if err := r.Update(ctx, &u); err != nil {
+				logger.Error(err, "Failed to remove finalizer from Vault CRD")
+				return ctrl.Result{}, err
+			}
+			logger.Info("Removed finalizer from Vault CRD")
+		}
+		return ctrl.Result{}, nil
 	}
 
 	if vaultData.Spec.VaultName != u.GetName() {
@@ -241,13 +274,31 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Info("VaultData PodIp updated to " + vaultData.Spec.VaultIp)
 	}
 
-	if vaultData.Spec.VaultStatus != string(pod.Status.Conditions[0].Type) {
-		vaultData.Spec.VaultStatus = string(pod.Status.Conditions[0].Type)
-		if err := r.Client.Update(ctx, vaultData); err != nil {
-			logger.Error(err, "Failed to update VaultData")
-			return ctrl.Result{}, err
+	for _, status := range vaultData.Spec.VaultStatus {
+		if status.Name != pod.Status.ContainerStatuses[0].Name {
+			status.Name = pod.Status.ContainerStatuses[0].Name
+			if err := r.Client.Update(ctx, vaultData); err != nil {
+				logger.Error(err, "Failed to update VaultData")
+				return ctrl.Result{}, err
+			}
+			logger.Info("VaultData Container Name updated to " + status.Name)
 		}
-		logger.Info("VaultData PodStatus updated to " + vaultData.Spec.VaultStatus)
+		if status.Ready != pod.Status.ContainerStatuses[0].Ready {
+			status.Ready = pod.Status.ContainerStatuses[0].Ready
+			if err := r.Client.Update(ctx, vaultData); err != nil {
+				logger.Error(err, "Failed to update VaultData")
+				return ctrl.Result{}, err
+			}
+			logger.Info("VaultData Container Ready updated to " + fmt.Sprintf("%t", status.Ready))
+		}
+		if status.State.Running != pod.Status.ContainerStatuses[0].State.Running {
+			status.State.Running = pod.Status.ContainerStatuses[0].State.Running
+			if err := r.Client.Update(ctx, vaultData); err != nil {
+				logger.Error(err, "Failed to update VaultData")
+				return ctrl.Result{}, err
+			}
+			logger.Info("VaultData Container Liveness updated to " + fmt.Sprintf("%t", status.State.Running != nil))
+		}
 	}
 
 	if vaultData.Spec.VaultMemUsage != vaultMetrics.Containers[0].Usage.Memory().String() {
@@ -286,27 +337,31 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		logger.Info("VaultData Image updated to " + vaultData.Spec.VaultImage)
 	}
 
-	annotations := u.GetAnnotations()
-	logger.Info("Vault Annotations: " + fmt.Sprintf("%v", annotations))
-
-	//vault pod data directory
-	// dataDir, err := clientset.CoreV1().Pods("default").Get(ctx, "vault-0", metav1.GetOptions{})
-	// if err != nil {
-	// 	panic(err.Error())
-	// }
-
-	//labels from data directory
-	// dataDirLabels := dataDir.GetLabels()
-	// for key, value := range dataDirLabels {
-	// 	logger.Info("VAULT_DATA_DIR_LABELS=" + key + "=" + value)
-	// }
-
-	// logger.Info("VAULT_SECRETS=" + strconv.Itoa(10))
+	// annotations := u.GetAnnotations()
+	// logger.Info("Vault Annotations: " + fmt.Sprintf("%v", annotations))
 
 	// nextRun := time.Now().Add(10 * time.Second)
 	// return ctrl.Result{RequeueAfter: nextRun.Sub(time.Now())}, nil
 
 	return ctrl.Result{}, nil
+}
+
+func containsString(slice []string, s string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
+func removeString(slice []string, s string) []string {
+	for i, item := range slice {
+		if item == s {
+			return append(slice[:i], slice[i+1:]...)
+		}
+	}
+	return slice
 }
 
 // SetupWithManager sets up the controller with the Manager.

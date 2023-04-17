@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	rossoperatoriov1alpha1 "github.com/2000rosser/FYP.git/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -30,17 +31,22 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
-	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
+
 	// corev1 "k8s.io/api/core/v1"
+
+	"github.com/prometheus/client_golang/prometheus"
+	//import the metrics package
+	"github.com/2000rosser/FYP.git/metrics"
 )
 
 // VaultMonReconciler reconciles a VaultMon object
 type VaultMonReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme       *runtime.Scheme
+	VaultMetrics *metrics.VaultMonMetrics
 }
 
 func NewVaultReconciler(client client.Client, scheme *runtime.Scheme) *VaultMonReconciler {
@@ -60,6 +66,7 @@ func NewVaultReconciler(client client.Client, scheme *runtime.Scheme) *VaultMonR
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+
 	logger := ctrllog.FromContext(ctx)
 	u := unstructured.Unstructured{}
 	u.SetGroupVersionKind(schema.GroupVersionKind{
@@ -136,15 +143,15 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	logger.Info("Creating VaultData")
 	logger.Info("Getting Vault Metrics")
 
-	metricsClientset, err := metricsclientset.NewForConfig(config)
-	if err != nil {
-		logger.Info("Error creating metrics clientset: " + err.Error())
-	}
+	// metricsClientset, err := metricsclientset.NewForConfig(config)
+	// if err != nil {
+	// 	logger.Info("Error creating metrics clientset: " + err.Error())
+	// }
 
-	vaultMetrics, err := metricsClientset.MetricsV1beta1().PodMetricses("default").Get(ctx, "vault-0", metav1.GetOptions{})
-	if err != nil {
-		logger.Info("Error getting vault metrics: " + err.Error())
-	}
+	// vaultMetrics, err := metricsClientset.MetricsV1beta1().PodMetricses("default").Get(ctx, "vault-0", metav1.GetOptions{})
+	// if err != nil {
+	// 	logger.Info("Error getting vault metrics: " + err.Error())
+	// }
 
 	deployment, err := clientset.AppsV1().Deployments(u.GetNamespace()).Get(ctx, "vault-configurer", metav1.GetOptions{})
 	if err != nil {
@@ -178,9 +185,9 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 					VaultStatus: pod.Status.ContainerStatuses,
 
-					VaultMemUsage: vaultMetrics.Containers[0].Usage.Memory().String(),
+					// VaultMemUsage: vaultMetrics.Containers[0].Usage.Memory().String(),
 
-					VaultCPUUsage: vaultMetrics.Containers[0].Usage.Cpu().String(),
+					// VaultCPUUsage: vaultMetrics.Containers[0].Usage.Cpu().String(),
 
 					VaultReplicas: deployment.Status.Replicas,
 
@@ -205,6 +212,16 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			logger.Info("VAULT_CPU_USAGE=" + vaultData.Spec.VaultCPUUsage)
 			logger.Info("VAULT_REPLICAS=" + string(vaultData.Spec.VaultReplicas))
 			logger.Info("VAULT_IMAGE=" + vaultData.Spec.VaultImage)
+
+			r.VaultMetrics.VaultInfo.With(prometheus.Labels{
+				"vaultName":      vaultData.Spec.VaultName,
+				"vaultUid":       vaultData.Spec.VaultNamespace,
+				"vaultNamespace": vaultData.Spec.VaultUid,
+				"vaultIp":        vaultData.Spec.VaultIp,
+				"vaultReplicas":  strconv.Itoa(int(vaultData.Spec.VaultReplicas)),
+				"vaultImage":     vaultData.Spec.VaultImage,
+			}).Set(1)
+			logger.Info("Vault metrics set")
 
 		} else {
 			logger.Error(err, "Failed to get VaultData")
@@ -301,23 +318,23 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
-	if vaultData.Spec.VaultMemUsage != vaultMetrics.Containers[0].Usage.Memory().String() {
-		vaultData.Spec.VaultMemUsage = vaultMetrics.Containers[0].Usage.Memory().String()
-		if err := r.Client.Update(ctx, vaultData); err != nil {
-			logger.Error(err, "Failed to update VaultData")
-			return ctrl.Result{}, err
-		}
-		logger.Info("VaultData MemoryUsage updated to " + vaultData.Spec.VaultMemUsage)
-	}
+	// if vaultData.Spec.VaultMemUsage != vaultMetrics.Containers[0].Usage.Memory().String() {
+	// 	vaultData.Spec.VaultMemUsage = vaultMetrics.Containers[0].Usage.Memory().String()
+	// 	if err := r.Client.Update(ctx, vaultData); err != nil {
+	// 		logger.Error(err, "Failed to update VaultData")
+	// 		return ctrl.Result{}, err
+	// 	}
+	// 	logger.Info("VaultData MemoryUsage updated to " + vaultData.Spec.VaultMemUsage)
+	// }
 
-	if vaultData.Spec.VaultCPUUsage != vaultMetrics.Containers[0].Usage.Cpu().String() {
-		vaultData.Spec.VaultCPUUsage = vaultMetrics.Containers[0].Usage.Cpu().String()
-		if err := r.Client.Update(ctx, vaultData); err != nil {
-			logger.Error(err, "Failed to update VaultData")
-			return ctrl.Result{}, err
-		}
-		logger.Info("VaultData CPUUsage updated to " + vaultData.Spec.VaultCPUUsage)
-	}
+	// if vaultData.Spec.VaultCPUUsage != vaultMetrics.Containers[0].Usage.Cpu().String() {
+	// 	vaultData.Spec.VaultCPUUsage = vaultMetrics.Containers[0].Usage.Cpu().String()
+	// 	if err := r.Client.Update(ctx, vaultData); err != nil {
+	// 		logger.Error(err, "Failed to update VaultData")
+	// 		return ctrl.Result{}, err
+	// 	}
+	// 	logger.Info("VaultData CPUUsage updated to " + vaultData.Spec.VaultCPUUsage)
+	// }
 
 	if vaultData.Spec.VaultReplicas != deployment.Status.Replicas {
 		vaultData.Spec.VaultReplicas = deployment.Status.Replicas

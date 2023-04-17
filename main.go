@@ -33,7 +33,16 @@ import (
 
 	rossoperatoriov1alpha1 "github.com/2000rosser/FYP.git/api/v1alpha1"
 	"github.com/2000rosser/FYP.git/controllers"
+
 	//+kubebuilder:scaffold:imports
+	"net/http"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	// "k8s.io/client-go/tools/cache"
+	//import the metrics package
+	"github.com/2000rosser/FYP.git/metrics"
 )
 
 var (
@@ -89,9 +98,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+	registry.MustRegister(prometheus.NewGoCollector())
+
+	go func() {
+		http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+		if err := http.ListenAndServe(":8005", nil); err != nil {
+			setupLog.Error(err, "metrics server failed to start")
+			os.Exit(1)
+		}
+	}()
+
+	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+		setupLog.Error(err, "problem running manager")
+		os.Exit(1)
+	}
+
+	vaultMetrics := metrics.NewVaultMonMetrics(registry)
+
 	if err = (&controllers.VaultMonReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		VaultMetrics: vaultMetrics,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "VaultMon")
 		os.Exit(1)

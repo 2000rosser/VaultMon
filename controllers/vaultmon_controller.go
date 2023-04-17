@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	rossoperatoriov1alpha1 "github.com/2000rosser/FYP.git/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -39,20 +38,20 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	//import the metrics package
-	"github.com/2000rosser/FYP.git/metrics"
 )
 
 // VaultMonReconciler reconciles a VaultMon object
 type VaultMonReconciler struct {
 	client.Client
 	Scheme       *runtime.Scheme
-	VaultMetrics *metrics.VaultMonMetrics
+	VaultMetrics *VaultMonMetrics
 }
 
-func NewVaultReconciler(client client.Client, scheme *runtime.Scheme) *VaultMonReconciler {
+func NewVaultReconciler(client client.Client, scheme *runtime.Scheme, vaultMetrics *VaultMonMetrics) *VaultMonReconciler {
 	return &VaultMonReconciler{
-		Client: client,
-		Scheme: scheme,
+		Client:       client,
+		Scheme:       scheme,
+		VaultMetrics: vaultMetrics,
 	}
 }
 
@@ -213,13 +212,16 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			logger.Info("VAULT_REPLICAS=" + string(vaultData.Spec.VaultReplicas))
 			logger.Info("VAULT_IMAGE=" + vaultData.Spec.VaultImage)
 
+			//log the value of vaultmetrics.vaultinfo
+			logger.Info("Vault metrics value: " + fmt.Sprintf("%v", r.VaultMetrics.VaultInfo))
+
 			r.VaultMetrics.VaultInfo.With(prometheus.Labels{
 				"vaultName":      vaultData.Spec.VaultName,
-				"vaultUid":       vaultData.Spec.VaultNamespace,
-				"vaultNamespace": vaultData.Spec.VaultUid,
+				"vaultUid":       vaultData.Spec.VaultUid,
+				"vaultNamespace": vaultData.Spec.VaultNamespace,
 				"vaultIp":        vaultData.Spec.VaultIp,
-				"vaultReplicas":  strconv.Itoa(int(vaultData.Spec.VaultReplicas)),
-				"vaultImage":     vaultData.Spec.VaultImage,
+				// "vaultReplicas": string(vaultData.Spec.VaultReplicas),
+				"vaultImage": vaultData.Spec.VaultImage,
 			}).Set(1)
 			logger.Info("Vault metrics set")
 
@@ -390,5 +392,5 @@ func (r *VaultMonReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Version: "v1alpha1",
 	})
 
-	return ctrl.NewControllerManagedBy(mgr).For(&u).Complete(NewVaultReconciler(mgr.GetClient(), mgr.GetScheme()))
+	return ctrl.NewControllerManagedBy(mgr).For(&u).Complete(NewVaultReconciler(mgr.GetClient(), mgr.GetScheme(), r.VaultMetrics))
 }

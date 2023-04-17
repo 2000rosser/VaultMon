@@ -39,10 +39,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-
 	// "k8s.io/client-go/tools/cache"
 	//import the metrics package
-	"github.com/2000rosser/FYP.git/metrics"
 )
 
 var (
@@ -110,12 +108,12 @@ func main() {
 		}
 	}()
 
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
-		os.Exit(1)
-	}
+	// if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	// 	setupLog.Error(err, "problem running manager")
+	// 	os.Exit(1)
+	// }
 
-	vaultMetrics := metrics.NewVaultMonMetrics(registry)
+	vaultMetrics := controllers.NewVaultMonMetrics(registry)
 
 	if err = (&controllers.VaultMonReconciler{
 		Client:       mgr.GetClient(),

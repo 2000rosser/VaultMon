@@ -21,13 +21,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	rossoperatoriov1alpha1 "github.com/2000rosser/FYP.git/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -38,6 +41,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	//import the metrics package
+	// metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 // VaultMonReconciler reconciles a VaultMon object
@@ -152,6 +156,58 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// 	logger.Info("Error getting vault metrics: " + err.Error())
 	// }
 
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		logger.Error(err, "Failed to create dynamic client")
+		return ctrl.Result{}, err
+	}
+
+	// Define the GVR for pod metrics
+	podMetricsGVR := schema.GroupVersionResource{
+		Group:    "metrics.k8s.io",
+		Version:  "v1beta1",
+		Resource: "pods",
+	}
+
+	// Fetch pod metrics
+	podMetrics, err := dynamicClient.Resource(podMetricsGVR).Namespace("default").Get(ctx, "vault-0", metav1.GetOptions{})
+	if err != nil {
+		logger.Error(err, "Failed to fetch pod metrics")
+		return ctrl.Result{}, err
+	}
+	containerMetrics := podMetrics.Object["containers"].([]interface{})[0].(map[string]interface{})
+	usage := containerMetrics["usage"].(map[string]interface{})
+	memoryUsageStr := usage["memory"].(string)
+	cpuUsageStr := usage["cpu"].(string)
+
+	memoryUsage, err := resource.ParseQuantity(memoryUsageStr)
+	if err != nil {
+		logger.Error(err, "Failed to parse memory usage")
+		return ctrl.Result{}, err
+	}
+
+	cpuUsage, err := resource.ParseQuantity(cpuUsageStr)
+	if err != nil {
+		logger.Error(err, "Failed to parse CPU usage")
+		return ctrl.Result{}, err
+	}
+
+	cpuLimit := pod.Spec.Containers[0].Resources.Limits.Cpu()
+	memoryLimit := pod.Spec.Containers[0].Resources.Limits.Memory()
+
+	cpuLimitConv := cpuLimit.AsApproximateFloat64()
+	memoryLimitConv := memoryLimit.AsApproximateFloat64()
+
+	cpuUsageConv := cpuUsage.AsApproximateFloat64()
+	memoryUsageConv := memoryUsage.AsApproximateFloat64()
+
+	cpuUsagePercent := (cpuUsageConv / cpuLimitConv) * 100
+	memoryUsagePercent := (memoryUsageConv / memoryLimitConv) * 100
+
+	//convert the cpuUsagePercent and memoryUsagePercent to string
+	cpuUsagePercentStr := strconv.FormatFloat(cpuUsagePercent, 'f', 2, 64)
+	memoryUsagePercentStr := strconv.FormatFloat(memoryUsagePercent, 'f', 2, 64)
+
 	deployment, err := clientset.AppsV1().Deployments(u.GetNamespace()).Get(ctx, "vault-configurer", metav1.GetOptions{})
 	if err != nil {
 		logger.Error(err, "Failed to get deployment")
@@ -184,9 +240,9 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 					VaultStatus: pod.Status.ContainerStatuses,
 
-					// VaultMemUsage: vaultMetrics.Containers[0].Usage.Memory().String(),
+					VaultMemUsage: memoryUsagePercentStr,
 
-					// VaultCPUUsage: vaultMetrics.Containers[0].Usage.Cpu().String(),
+					VaultCPUUsage: cpuUsagePercentStr,
 
 					VaultReplicas: deployment.Status.Replicas,
 

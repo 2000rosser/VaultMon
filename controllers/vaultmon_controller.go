@@ -1,28 +1,14 @@
-/*
-Copyright 2023.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package controllers
 
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
+
+	// "os"
+	// "path/filepath"
 	"strconv"
 
+	//import rest
 	rossoperatoriov1alpha1 "github.com/2000rosser/FYP.git/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -32,7 +18,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/rest"
+
+	// "k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
@@ -40,8 +28,12 @@ import (
 	// corev1 "k8s.io/api/core/v1"
 
 	"github.com/prometheus/client_golang/prometheus"
-	//import the metrics package
-	// metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
+
+	//import clientcmd
+	"os"
+	"path/filepath"
+
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // VaultMonReconciler reconciles a VaultMon object
@@ -67,6 +59,8 @@ func NewVaultReconciler(client client.Client, scheme *runtime.Scheme, vaultMetri
 //+kubebuilder:rbac:groups="metrics.k8s.io",resources=pods,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=serviceaccounts;deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=rossoperator.io,resources=vaultmons,verbs=get;list;watch;create;update;patch;delete
 
 func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 
@@ -82,6 +76,9 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	logger.Info("Reconciling Vault")
+	logger.Info("Current Vault being reconciled", "name", u.GetName(), "namespace", u.GetNamespace(), "uid", u.GetUID())
+
+	logger.Info("Processing Vault item", "name", u.GetName(), "namespace", u.GetNamespace(), "uid", u.GetUID())
 
 	// ingressList := &v1.IngressList{}
 	// labelSelector := labels.SelectorFromSet(map[string]string{"vault_cr": "vault"})
@@ -98,17 +95,32 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// 	logger.Info("No Ingress found for the Vault instance")
 	// 	return ctrl.Result{}, nil
 	// }
+	//*********************************************************************************************************************
 
-	//*****************************use this if the operator is ran outside the cluster******************************
-
-	//path to the kubeconfig file
-	kubeconfig := filepath.Join(
-		os.Getenv("HOME"), ".kube", "config",
-	)
-
-	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	runOutsideClusterStr := os.Getenv("RUN_OUTSIDE_CLUSTER")
+	runOutsideCluster, err := strconv.ParseBool(runOutsideClusterStr)
 	if err != nil {
-		panic(err.Error())
+		logger.Error(err, "Failed to parse RUN_OUTSIDE_CLUSTER")
+		// return ctrl.Result{}, err
+	}
+
+	runOutsideCluster = false
+
+	var config *rest.Config
+
+	if runOutsideCluster {
+		// Code to execute when running outside the cluster
+		kubeconfig := filepath.Join(os.Getenv("HOME"), ".kube", "config")
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			panic(err.Error())
+		}
+	} else {
+		// Code to execute when running inside the cluster
+		config, err = rest.InClusterConfig()
+		if err != nil {
+			panic(err.Error())
+		}
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
@@ -116,32 +128,10 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		panic(err.Error())
 	}
 
-	pod, err := clientset.CoreV1().Pods("default").Get(ctx, "vault-0", metav1.GetOptions{})
+	pod, err := clientset.CoreV1().Pods(u.GetNamespace()).Get(ctx, u.GetName()+"-0", metav1.GetOptions{})
 	if err != nil {
 		panic(err.Error())
 	}
-
-	//******************************use this if the operator is ran outside the cluster******************************
-
-	//*****************************use this if the operator is ran inside the cluster******************************
-
-	// //instance of the kubernetes client
-	// config, err := rest.InClusterConfig()
-	// if err != nil {
-	// 	panic(err.Error())
-	// }
-
-	// clientset, err := kubernetes.NewForConfig(config)
-	// if err != nil {
-	// 	panic(err.Error())
-	// }
-
-	// pod, err := clientset.CoreV1().Pods("default").Get(ctx, "vault-0", metav1.GetOptions{})
-	// if err != nil {
-	// 	panic(err.Error())
-	// }
-
-	//******************************use this if the operator is ran inside the cluster******************************
 
 	logger.Info("Creating VaultData")
 	logger.Info("Getting Vault Metrics")
@@ -204,11 +194,10 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	cpuUsagePercent := (cpuUsageConv / cpuLimitConv) * 100
 	memoryUsagePercent := (memoryUsageConv / memoryLimitConv) * 100
 
-	//convert the cpuUsagePercent and memoryUsagePercent to string
 	cpuUsagePercentStr := strconv.FormatFloat(cpuUsagePercent, 'f', 2, 64)
 	memoryUsagePercentStr := strconv.FormatFloat(memoryUsagePercent, 'f', 2, 64)
 
-	deployment, err := clientset.AppsV1().Deployments(u.GetNamespace()).Get(ctx, "vault-configurer", metav1.GetOptions{})
+	deployment, err := clientset.AppsV1().Deployments(u.GetNamespace()).Get(ctx, u.GetName()+"-configurer", metav1.GetOptions{})
 	if err != nil {
 		logger.Error(err, "Failed to get deployment")
 		return ctrl.Result{}, err
@@ -224,9 +213,12 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	vaultData := &rossoperatoriov1alpha1.VaultMon{}
 	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: req.Name}, vaultData); err != nil {
 		if errors.IsNotFound(err) {
+			logger.Info("Creating new VaultMon for Vault item", "name", u.GetName(), "namespace", u.GetNamespace(), "uid", u.GetUID())
+			uniqueID := u.GetUID()
+			vaultMonName := fmt.Sprintf("%s-%s", "vaultmon", uniqueID)
 			vaultData = &rossoperatoriov1alpha1.VaultMon{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      req.Name,
+					Name:      vaultMonName,
 					Namespace: req.Namespace,
 				},
 				Spec: rossoperatoriov1alpha1.VaultMonSpec{
@@ -254,22 +246,34 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				return ctrl.Result{}, err
 			}
 			logger.Info("VaultData created")
-			logger.Info("VAULT_NAME=" + string(vaultData.Spec.VaultName))
-			logger.Info("VAULT_NAMESPACE=" + string(vaultData.Spec.VaultNamespace))
-			logger.Info("VAULT_POD_IP=" + vaultData.Spec.VaultIp)
-			logger.Info("VAULT_UID=" + vaultData.Spec.VaultUid)
+			logSimplified("VAULT_NAME=" + vaultData.Spec.VaultName)
+			logSimplified("VAULT_NAMESPACE=" + vaultData.Spec.VaultNamespace)
+			logSimplified("VAULT_POD_IP=" + vaultData.Spec.VaultIp)
+			logSimplified("VAULT_UID=" + vaultData.Spec.VaultUid)
+			// logger.Info("VAULT_NAME=" + string(vaultData.Spec.VaultName))
+			// logger.Info("VAULT_NAMESPACE=" + string(vaultData.Spec.VaultNamespace))
+			// logger.Info("VAULT_POD_IP=" + vaultData.Spec.VaultIp)
+			// logger.Info("VAULT_UID=" + vaultData.Spec.VaultUid)
 			for _, status := range vaultData.Spec.VaultStatus {
-				logger.Info("Container Name: " + status.Name)
-				logger.Info("Container Ready: " + fmt.Sprintf("%t", status.Ready))
-				logger.Info("Container Liveness: " + fmt.Sprintf("%t", status.State.Running != nil))
+				// logger.Info("Container Name: " + status.Name)
+				// logger.Info("Container Ready: " + fmt.Sprintf("%t", status.Ready))
+				// logger.Info("Container Liveness: " + fmt.Sprintf("%t", status.State.Running != nil))
+				logSimplified("CONTAINER_NAME=" + status.Name)
+				logSimplified("CONTAINER_READY=" + fmt.Sprintf("%t", status.Ready))
+				logSimplified("CONTAINER_LIVENESS=" + fmt.Sprintf("%t", status.State.Running != nil))
 			}
-			logger.Info("VAULT_MEMORY_USAGE=" + vaultData.Spec.VaultMemUsage)
-			logger.Info("VAULT_CPU_USAGE=" + vaultData.Spec.VaultCPUUsage)
-			logger.Info("VAULT_REPLICAS=" + string(vaultData.Spec.VaultReplicas))
-			logger.Info("VAULT_IMAGE=" + vaultData.Spec.VaultImage)
+			// logger.Info("VAULT_MEMORY_USAGE=" + vaultData.Spec.VaultMemUsage)
+			// logger.Info("VAULT_CPU_USAGE=" + vaultData.Spec.VaultCPUUsage)
+			// logger.Info("VAULT_REPLICAS=" + string(vaultData.Spec.VaultReplicas))
+			// logger.Info("VAULT_IMAGE=" + vaultData.Spec.VaultImage)
+			logSimplified("VAULT_MEMORY_USAGE=" + vaultData.Spec.VaultMemUsage)
+			logSimplified("VAULT_CPU_USAGE=" + vaultData.Spec.VaultCPUUsage)
+			logSimplified("VAULT_REPLICAS=" + string(vaultData.Spec.VaultReplicas))
+			logSimplified("VAULT_IMAGE=" + vaultData.Spec.VaultImage)
 
-			//log the value of vaultmetrics.vaultinfo
-			logger.Info("Vault metrics value: " + fmt.Sprintf("%v", r.VaultMetrics.VaultInfo))
+			//log the value of vaultmetrics.vaultinfo using logSimplified function
+			logSimplified("VAULT_METRICS_VALUE=" + fmt.Sprintf("%v", r.VaultMetrics.VaultInfo))
+			// logger.Info("Vault metrics value: " + fmt.Sprintf("%v", r.VaultMetrics.VaultInfo))
 
 			r.VaultMetrics.VaultInfo.With(prometheus.Labels{
 				"vaultName":      vaultData.Spec.VaultName,
@@ -319,6 +323,7 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			logger.Error(err, "Failed to update VaultData")
 			return ctrl.Result{}, err
 		}
+		logger.Info("VaultData updated", "vaultMonName", vaultData.Name)
 		logger.Info("VaultData Name updated to " + vaultData.Spec.VaultName)
 	}
 
@@ -376,23 +381,23 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
-	// if vaultData.Spec.VaultMemUsage != vaultMetrics.Containers[0].Usage.Memory().String() {
-	// 	vaultData.Spec.VaultMemUsage = vaultMetrics.Containers[0].Usage.Memory().String()
-	// 	if err := r.Client.Update(ctx, vaultData); err != nil {
-	// 		logger.Error(err, "Failed to update VaultData")
-	// 		return ctrl.Result{}, err
-	// 	}
-	// 	logger.Info("VaultData MemoryUsage updated to " + vaultData.Spec.VaultMemUsage)
-	// }
+	if vaultData.Spec.VaultMemUsage != memoryUsagePercentStr {
+		vaultData.Spec.VaultMemUsage = memoryUsagePercentStr
+		if err := r.Client.Update(ctx, vaultData); err != nil {
+			logger.Error(err, "Failed to update VaultData")
+			return ctrl.Result{}, err
+		}
+		logger.Info("VaultData Memory Usage updated to " + vaultData.Spec.VaultMemUsage)
+	}
 
-	// if vaultData.Spec.VaultCPUUsage != vaultMetrics.Containers[0].Usage.Cpu().String() {
-	// 	vaultData.Spec.VaultCPUUsage = vaultMetrics.Containers[0].Usage.Cpu().String()
-	// 	if err := r.Client.Update(ctx, vaultData); err != nil {
-	// 		logger.Error(err, "Failed to update VaultData")
-	// 		return ctrl.Result{}, err
-	// 	}
-	// 	logger.Info("VaultData CPUUsage updated to " + vaultData.Spec.VaultCPUUsage)
-	// }
+	if vaultData.Spec.VaultCPUUsage != cpuUsagePercentStr {
+		vaultData.Spec.VaultCPUUsage = cpuUsagePercentStr
+		if err := r.Client.Update(ctx, vaultData); err != nil {
+			logger.Error(err, "Failed to update VaultData")
+			return ctrl.Result{}, err
+		}
+		logger.Info("VaultData CPU Usage updated to " + vaultData.Spec.VaultCPUUsage)
+	}
 
 	if vaultData.Spec.VaultReplicas != deployment.Status.Replicas {
 		vaultData.Spec.VaultReplicas = deployment.Status.Replicas
@@ -419,6 +424,25 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// return ctrl.Result{RequeueAfter: nextRun.Sub(time.Now())}, nil
 
 	return ctrl.Result{}, nil
+}
+
+func logSimplified(message string, keyValuePairs ...interface{}) {
+	logger := ctrl.Log
+
+	keys := make([]interface{}, 0, len(keyValuePairs)/2)
+	values := make([]interface{}, 0, len(keyValuePairs)/2)
+
+	for i := 0; i < len(keyValuePairs); i += 2 {
+		keys = append(keys, keyValuePairs[i])
+		values = append(values, keyValuePairs[i+1])
+	}
+
+	msg := message
+	for i, key := range keys {
+		msg = fmt.Sprintf("%s %s=%v", msg, key, values[i])
+	}
+
+	logger.Info(msg)
 }
 
 func containsString(slice []string, s string) bool {

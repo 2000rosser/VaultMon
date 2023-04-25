@@ -66,8 +66,8 @@ jobs:
 
     - name: Save Docker image
       run: |
-        IMAGE_NAME=vaultmon
-        IMAGE_TAG=vaultmontag
+        IMAGE_NAME=2000rosser/controller
+        IMAGE_TAG=latest
         docker save $IMAGE_NAME:$IMAGE_TAG > image.tar
 
     - name: Upload Docker image

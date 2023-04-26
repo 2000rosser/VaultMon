@@ -3,12 +3,8 @@ package controllers
 import (
 	"context"
 	"fmt"
-
-	// "os"
-	// "path/filepath"
 	"strconv"
 
-	//import rest
 	rossoperatoriov1alpha1 "github.com/2000rosser/FYP.git/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -21,19 +17,14 @@ import (
 	"k8s.io/client-go/rest"
 
 	// "k8s.io/client-go/tools/clientcmd"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
-
-	// corev1 "k8s.io/api/core/v1"
-
-	"github.com/prometheus/client_golang/prometheus"
-
-	//import clientcmd
 	"os"
 	"path/filepath"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/client-go/tools/clientcmd"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // VaultMonReconciler reconciles a VaultMon object
@@ -109,14 +100,12 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	var config *rest.Config
 
 	if runOutsideCluster {
-		// Code to execute when running outside the cluster
 		kubeconfig := filepath.Join(os.Getenv("HOME"), ".kube", "config")
 		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
 			panic(err.Error())
 		}
 	} else {
-		// Code to execute when running inside the cluster
 		config, err = rest.InClusterConfig()
 		if err != nil {
 			panic(err.Error())

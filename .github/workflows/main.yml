@@ -120,6 +120,12 @@ jobs:
     - name: Load Docker image into cluster
       run: |
         kind load docker-image 2000rosser/controller:latest
+    
+    - name: Install Prometheus Operator
+      run: |
+        kubectl create namespace monitoring
+        kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/release-0.50/bundle.yaml
+        sleep 10
 
     - name: Deploy
       run: make deploy

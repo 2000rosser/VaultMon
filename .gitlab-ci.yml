@@ -18,6 +18,8 @@ variables:
 test:
   <<: *default_job
   stage: test
+  tags:
+    - operator
   script:
     - go mod tidy
     - make generate
@@ -26,6 +28,8 @@ test:
 build:
   <<: *default_job
   stage: build
+  tags:
+    - operator
   needs: ["test"]
   script:
     - docker login -u $DOCKERHUB_USERNAME -p $DOCKERHUB_TOKEN
@@ -38,6 +42,8 @@ build:
 deploy:
   <<: *default_job
   stage: deploy
+  tags:
+    - operator
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
   needs: ["build"]

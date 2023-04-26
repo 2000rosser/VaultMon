@@ -107,5 +107,19 @@ jobs:
       run: |
         docker load < image.tar
 
+    - name: Install kind
+      run: |
+        curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.11.1/kind-linux-amd64
+        chmod +x ./kind
+        sudo mv kind /usr/local/bin/
+
+    - name: Create Kubernetes cluster
+      run: |
+        kind create cluster
+
+    - name: Load Docker image into cluster
+      run: |
+        kind load docker-image 2000rosser/controller:latest
+
     - name: Deploy
       run: make deploy

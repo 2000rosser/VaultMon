@@ -1,43 +1,38 @@
-/*
-Copyright 2023.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package controllers
 
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
+
+	// "log"
+	"strconv"
+	"time"
 
 	rossoperatoriov1alpha1 "github.com/2000rosser/FYP.git/api/v1alpha1"
+	// "github.com/golang/protobuf/ptypes/timestamp"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+
+	//import corev1 and appsv1
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+
+	// "k8s.io/client-go/tools/clientcmd"
+	"os"
+	"path/filepath"
+
+	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
-
-	// corev1 "k8s.io/api/core/v1"
-
-	"github.com/prometheus/client_golang/prometheus"
-	//import the metrics package
 )
 
 // VaultMonReconciler reconciles a VaultMon object
@@ -63,21 +58,22 @@ func NewVaultReconciler(client client.Client, scheme *runtime.Scheme, vaultMetri
 //+kubebuilder:rbac:groups="metrics.k8s.io",resources=pods,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=serviceaccounts;deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=rossoperator.io,resources=vaultmons,verbs=get;list;watch;create;update;patch;delete
 
 func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 
 	logger := ctrllog.FromContext(ctx)
-	u := unstructured.Unstructured{}
-	u.SetGroupVersionKind(schema.GroupVersionKind{
-		Kind:    "Vault",
-		Group:   "vault.banzaicloud.com",
-		Version: "v1alpha1",
-	})
-	if err := r.Get(ctx, req.NamespacedName, &u); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+
+	u, err := r.fetchVaultCRD(ctx, req)
+	if err != nil {
+		logger.Error(err, "Failed to fetch Vault CRD")
+		return ctrl.Result{}, err
 	}
 
 	logger.Info("Reconciling Vault")
+	logger.Info("Current Vault being reconciled", "name", u.GetName(), "namespace", u.GetNamespace(), "uid", u.GetUID())
+	logger.Info("Processing Vault item", "name", u.GetName(), "namespace", u.GetNamespace(), "uid", u.GetUID())
 
 	// ingressList := &v1.IngressList{}
 	// labelSelector := labels.SelectorFromSet(map[string]string{"vault_cr": "vault"})
@@ -94,17 +90,86 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// 	logger.Info("No Ingress found for the Vault instance")
 	// 	return ctrl.Result{}, nil
 	// }
+	//*********************************************************************************************************************
 
-	//*****************************use this if the operator is ran outside the cluster******************************
+	clientset, dynamicClient, err := r.getKubeClient(ctx, u)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 
-	//path to the kubeconfig file
-	kubeconfig := filepath.Join(
-		os.Getenv("HOME"), ".kube", "config",
-	)
-
-	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	pod, err := clientset.CoreV1().Pods(u.GetNamespace()).Get(ctx, u.GetName()+"-0", metav1.GetOptions{})
 	if err != nil {
 		panic(err.Error())
+	}
+
+	logger.Info("Creating VaultData")
+	logger.Info("Getting Vault Metrics")
+
+	cpuUsagePercentStr, memoryUsagePercentStr, err := r.getVaultMetrics(ctx, dynamicClient, pod)
+	if err != nil {
+		logger.Info("Error getting vault metrics: " + err.Error())
+	}
+
+	deployment, err := clientset.AppsV1().Deployments(u.GetNamespace()).Get(ctx, u.GetName()+"-configurer", metav1.GetOptions{})
+	if err != nil {
+		logger.Error(err, "Failed to get deployment")
+		return ctrl.Result{}, err
+	}
+
+	err = r.createOrUpdateVaultMonCRD(clientset, deployment, ctx, req, u, pod, cpuUsagePercentStr, memoryUsagePercentStr)
+	if err != nil {
+		logger.Error(err, "Failed to create or update VaultMon CRD")
+		return ctrl.Result{}, err
+	}
+
+	err = r.manageFinalizers(ctx, u)
+
+	// annotations := u.GetAnnotations()
+	// logger.Info("Vault Annotations: " + fmt.Sprintf("%v", annotations))
+
+	nextRun := time.Now().Add(10 * time.Second)
+	return ctrl.Result{RequeueAfter: nextRun.Sub(time.Now())}, nil
+}
+
+// fetch the Vault CRD.
+func (r *VaultMonReconciler) fetchVaultCRD(ctx context.Context, req ctrl.Request) (*unstructured.Unstructured, error) {
+	u := unstructured.Unstructured{}
+	u.SetGroupVersionKind(schema.GroupVersionKind{
+		Kind:    "Vault",
+		Group:   "vault.banzaicloud.com",
+		Version: "v1alpha1",
+	})
+	if err := r.Get(ctx, req.NamespacedName, &u); err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// a function that gets the config, clientset, and dynamicClient
+func (r *VaultMonReconciler) getKubeClient(ctx context.Context, vault *unstructured.Unstructured) (*kubernetes.Clientset, dynamic.Interface, error) {
+	logger := ctrl.Log
+	runOutsideClusterStr := os.Getenv("RUN_OUTSIDE_CLUSTER")
+	runOutsideCluster, err := strconv.ParseBool(runOutsideClusterStr)
+	if err != nil {
+		logger.Info("Failed to parse RUN_OUTSIDE_CLUSTER")
+		// return ctrl.Result{}, err
+	}
+
+	runOutsideCluster = true
+
+	var config *rest.Config
+
+	if runOutsideCluster {
+		kubeconfig := filepath.Join(os.Getenv("HOME"), ".kube", "config")
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			panic(err.Error())
+		}
+	} else {
+		config, err = rest.InClusterConfig()
+		if err != nil {
+			panic(err.Error())
+		}
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
@@ -112,53 +177,68 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		panic(err.Error())
 	}
 
-	pod, err := clientset.CoreV1().Pods("default").Get(ctx, "vault-0", metav1.GetOptions{})
+	dynamicClient, err := dynamic.NewForConfig(config)
 	if err != nil {
-		panic(err.Error())
+		logger.Error(err, "Failed to create dynamic client")
+		return nil, nil, err
 	}
 
-	//******************************use this if the operator is ran outside the cluster******************************
+	return clientset, dynamicClient, nil
+}
 
-	//*****************************use this if the operator is ran inside the cluster******************************
-
-	// //instance of the kubernetes client
-	// config, err := rest.InClusterConfig()
-	// if err != nil {
-	// 	panic(err.Error())
-	// }
-
-	// clientset, err := kubernetes.NewForConfig(config)
-	// if err != nil {
-	// 	panic(err.Error())
-	// }
-
-	// pod, err := clientset.CoreV1().Pods("default").Get(ctx, "vault-0", metav1.GetOptions{})
-	// if err != nil {
-	// 	panic(err.Error())
-	// }
-
-	//******************************use this if the operator is ran inside the cluster******************************
-
-	logger.Info("Creating VaultData")
-	logger.Info("Getting Vault Metrics")
-
-	// metricsClientset, err := metricsclientset.NewForConfig(config)
-	// if err != nil {
-	// 	logger.Info("Error creating metrics clientset: " + err.Error())
-	// }
-
-	// vaultMetrics, err := metricsClientset.MetricsV1beta1().PodMetricses("default").Get(ctx, "vault-0", metav1.GetOptions{})
-	// if err != nil {
-	// 	logger.Info("Error getting vault metrics: " + err.Error())
-	// }
-
-	deployment, err := clientset.AppsV1().Deployments(u.GetNamespace()).Get(ctx, "vault-configurer", metav1.GetOptions{})
-	if err != nil {
-		logger.Error(err, "Failed to get deployment")
-		return ctrl.Result{}, err
+// a function that gets the vaultMetrics
+func (r *VaultMonReconciler) getVaultMetrics(ctx context.Context, dynamicClient dynamic.Interface, pod *corev1.Pod) (string, string, error) {
+	logger := ctrl.Log
+	podMetricsGVR := schema.GroupVersionResource{
+		Group:    "metrics.k8s.io",
+		Version:  "v1beta1",
+		Resource: "pods",
 	}
 
-	//other image
+	//fetch pod metrics
+	podMetrics, err := dynamicClient.Resource(podMetricsGVR).Namespace("default").Get(ctx, "vault-0", metav1.GetOptions{})
+	if err != nil {
+		logger.Error(err, "Failed to fetch pod metrics")
+		return "", "", err
+	}
+	containerMetrics := podMetrics.Object["containers"].([]interface{})[0].(map[string]interface{})
+	usage := containerMetrics["usage"].(map[string]interface{})
+	memoryUsageStr := usage["memory"].(string)
+	cpuUsageStr := usage["cpu"].(string)
+
+	memoryUsage, err := resource.ParseQuantity(memoryUsageStr)
+	if err != nil {
+		logger.Error(err, "Failed to parse memory usage")
+		return "", "", err
+	}
+
+	cpuUsage, err := resource.ParseQuantity(cpuUsageStr)
+	if err != nil {
+		logger.Error(err, "Failed to parse CPU usage")
+		return "", "", err
+	}
+
+	cpuLimit := pod.Spec.Containers[0].Resources.Limits.Cpu()
+	memoryLimit := pod.Spec.Containers[0].Resources.Limits.Memory()
+
+	cpuLimitConv := cpuLimit.AsApproximateFloat64()
+	memoryLimitConv := memoryLimit.AsApproximateFloat64()
+
+	cpuUsageConv := cpuUsage.AsApproximateFloat64()
+	memoryUsageConv := memoryUsage.AsApproximateFloat64()
+
+	cpuUsagePercent := (cpuUsageConv / cpuLimitConv) * 100
+	memoryUsagePercent := (memoryUsageConv / memoryLimitConv) * 100
+
+	cpuUsagePercentStr := strconv.FormatFloat(cpuUsagePercent, 'f', 2, 64)
+	memoryUsagePercentStr := strconv.FormatFloat(memoryUsagePercent, 'f', 2, 64)
+
+	return cpuUsagePercentStr, memoryUsagePercentStr, nil
+}
+
+// a function that creates or updates the VaultMon CRD
+func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Clientset, deployment *appsv1.Deployment, ctx context.Context, req ctrl.Request, u *unstructured.Unstructured, pod *corev1.Pod, cpuUsagePercentStr string, memoryUsagePercentStr string) error {
+	logger := ctrl.Log
 	image, err := clientset.CoreV1().Pods("default").Get(ctx, "vault-0", metav1.GetOptions{})
 	if err != nil {
 		panic(err.Error())
@@ -166,11 +246,17 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	logger.Info("VAULT_IMAGE=" + image.Spec.Containers[0].Image)
 
 	vaultData := &rossoperatoriov1alpha1.VaultMon{}
-	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: req.Name}, vaultData); err != nil {
+	uniqueID := u.GetUID()
+	vaultMonName := fmt.Sprintf("%s-%s", "vaultmon", uniqueID)
+	err = r.Client.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: vaultMonName}, vaultData)
+	if err != nil {
 		if errors.IsNotFound(err) {
+			logger.Info("Creating new VaultMon for Vault item", "name", u.GetName(), "namespace", u.GetNamespace(), "uid", u.GetUID())
+			uniqueID := u.GetUID()
+			vaultMonName := fmt.Sprintf("%s-%s", "vaultmon", uniqueID)
 			vaultData = &rossoperatoriov1alpha1.VaultMon{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      req.Name,
+					Name:      vaultMonName,
 					Namespace: req.Namespace,
 				},
 				Spec: rossoperatoriov1alpha1.VaultMonSpec{
@@ -184,9 +270,9 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 					VaultStatus: pod.Status.ContainerStatuses,
 
-					// VaultMemUsage: vaultMetrics.Containers[0].Usage.Memory().String(),
+					VaultMemUsage: memoryUsagePercentStr,
 
-					// VaultCPUUsage: vaultMetrics.Containers[0].Usage.Cpu().String(),
+					VaultCPUUsage: cpuUsagePercentStr,
 
 					VaultReplicas: deployment.Status.Replicas,
 
@@ -195,100 +281,110 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			}
 			if err := r.Client.Create(ctx, vaultData); err != nil {
 				logger.Error(err, "Failed to create VaultData")
-				return ctrl.Result{}, err
+				return err
 			}
 			logger.Info("VaultData created")
-			logger.Info("VAULT_NAME=" + string(vaultData.Spec.VaultName))
-			logger.Info("VAULT_NAMESPACE=" + string(vaultData.Spec.VaultNamespace))
-			logger.Info("VAULT_POD_IP=" + vaultData.Spec.VaultIp)
-			logger.Info("VAULT_UID=" + vaultData.Spec.VaultUid)
+			logSimplified("VAULT_NAME=" + vaultData.Spec.VaultName)
+			logSimplified("VAULT_NAMESPACE=" + vaultData.Spec.VaultNamespace)
+			logSimplified("VAULT_POD_IP=" + vaultData.Spec.VaultIp)
+			logSimplified("VAULT_UID=" + vaultData.Spec.VaultUid)
 			for _, status := range vaultData.Spec.VaultStatus {
-				logger.Info("Container Name: " + status.Name)
-				logger.Info("Container Ready: " + fmt.Sprintf("%t", status.Ready))
-				logger.Info("Container Liveness: " + fmt.Sprintf("%t", status.State.Running != nil))
+				logSimplified("CONTAINER_NAME=" + status.Name)
+				logSimplified("CONTAINER_READY=" + fmt.Sprintf("%t", status.Ready))
+				logSimplified("CONTAINER_LIVENESS=" + fmt.Sprintf("%t", status.State.Running != nil))
 			}
-			logger.Info("VAULT_MEMORY_USAGE=" + vaultData.Spec.VaultMemUsage)
-			logger.Info("VAULT_CPU_USAGE=" + vaultData.Spec.VaultCPUUsage)
-			logger.Info("VAULT_REPLICAS=" + string(vaultData.Spec.VaultReplicas))
-			logger.Info("VAULT_IMAGE=" + vaultData.Spec.VaultImage)
+			logSimplified("VAULT_MEMORY_USAGE=" + vaultData.Spec.VaultMemUsage)
+			logSimplified("VAULT_CPU_USAGE=" + vaultData.Spec.VaultCPUUsage)
+			logSimplified("VAULT_REPLICAS=" + string(vaultData.Spec.VaultReplicas))
+			logSimplified("VAULT_IMAGE=" + vaultData.Spec.VaultImage)
 
-			//log the value of vaultmetrics.vaultinfo
-			logger.Info("Vault metrics value: " + fmt.Sprintf("%v", r.VaultMetrics.VaultInfo))
+			timestamp := time.Now().Format(time.RFC3339)
 
 			r.VaultMetrics.VaultInfo.With(prometheus.Labels{
 				"vaultName":      vaultData.Spec.VaultName,
 				"vaultUid":       vaultData.Spec.VaultUid,
 				"vaultNamespace": vaultData.Spec.VaultNamespace,
 				"vaultIp":        vaultData.Spec.VaultIp,
-				// "vaultReplicas": string(vaultData.Spec.VaultReplicas),
-				"vaultImage": vaultData.Spec.VaultImage,
+				"vaultImage":     vaultData.Spec.VaultImage,
+				"timestamp":      timestamp,
 			}).Set(1)
 			logger.Info("Vault metrics set")
 
 		} else {
 			logger.Error(err, "Failed to get VaultData")
-			return ctrl.Result{}, err
+			return err
 		}
-	}
-
-	vaultFinalizer := "vault.banzaicloud.com/finalizer2"
-
-	logger.Info("Vault finalizers" + fmt.Sprintf("%v", u.GetFinalizers()))
-
-	if !containsString(u.GetFinalizers(), vaultFinalizer) {
-		u.SetFinalizers(append(u.GetFinalizers(), vaultFinalizer))
-		if err := r.Update(ctx, &u); err != nil {
-			logger.Error(err, "Failed to add finalizer to Vault CRD")
-			return ctrl.Result{}, err
-		}
-		logger.Info("Added finalizer to Vault CRD")
-	}
-
-	if !u.GetDeletionTimestamp().IsZero() {
-		if containsString(u.GetFinalizers(), vaultFinalizer) {
-			logger.Info("Deleting VaultData")
-			u.SetFinalizers(removeString(u.GetFinalizers(), vaultFinalizer))
-			if err := r.Update(ctx, &u); err != nil {
-				logger.Error(err, "Failed to remove finalizer from Vault CRD")
-				return ctrl.Result{}, err
-			}
-			logger.Info("Removed finalizer from Vault CRD")
-		}
-		return ctrl.Result{}, nil
 	}
 
 	if vaultData.Spec.VaultName != u.GetName() {
 		vaultData.Spec.VaultName = u.GetName()
+		timestamp := time.Now().Format(time.RFC3339)
+		r.VaultMetrics.VaultInfo.With(prometheus.Labels{
+			"vaultName":      vaultData.Spec.VaultName,
+			"vaultUid":       vaultData.Spec.VaultUid,
+			"vaultNamespace": vaultData.Spec.VaultNamespace,
+			"vaultIp":        vaultData.Spec.VaultIp,
+			"vaultImage":     vaultData.Spec.VaultImage,
+			"timestamp":      timestamp,
+		}).Set(1)
 		if err := r.Client.Update(ctx, vaultData); err != nil {
 			logger.Error(err, "Failed to update VaultData")
-			return ctrl.Result{}, err
+			return err
 		}
+		logger.Info("VaultData updated", "vaultMonName", vaultData.Name)
 		logger.Info("VaultData Name updated to " + vaultData.Spec.VaultName)
 	}
 
 	if vaultData.Spec.VaultNamespace != u.GetNamespace() {
 		vaultData.Spec.VaultNamespace = u.GetNamespace()
+		timestamp := time.Now().Format(time.RFC3339)
+		r.VaultMetrics.VaultInfo.With(prometheus.Labels{
+			"vaultName":      vaultData.Spec.VaultName,
+			"vaultUid":       vaultData.Spec.VaultUid,
+			"vaultNamespace": vaultData.Spec.VaultNamespace,
+			"vaultIp":        vaultData.Spec.VaultIp,
+			"vaultImage":     vaultData.Spec.VaultImage,
+			"timestamp":      timestamp,
+		}).Set(1)
 		if err := r.Client.Update(ctx, vaultData); err != nil {
 			logger.Error(err, "Failed to update VaultData")
-			return ctrl.Result{}, err
+			return err
 		}
 		logger.Info("VaultData Namespace updated to " + vaultData.Spec.VaultNamespace)
 	}
 
 	if vaultData.Spec.VaultUid != string(u.GetUID()) {
 		vaultData.Spec.VaultUid = string(u.GetUID())
+		timestamp := time.Now().Format(time.RFC3339)
+		r.VaultMetrics.VaultInfo.With(prometheus.Labels{
+			"vaultName":      vaultData.Spec.VaultName,
+			"vaultUid":       vaultData.Spec.VaultUid,
+			"vaultNamespace": vaultData.Spec.VaultNamespace,
+			"vaultIp":        vaultData.Spec.VaultIp,
+			"vaultImage":     vaultData.Spec.VaultImage,
+			"timestamp":      timestamp,
+		}).Set(1)
 		if err := r.Client.Update(ctx, vaultData); err != nil {
 			logger.Error(err, "Failed to update VaultData")
-			return ctrl.Result{}, err
+			return err
 		}
 		logger.Info("VaultData Uid updated to " + vaultData.Spec.VaultUid)
 	}
 
 	if vaultData.Spec.VaultIp != pod.Status.PodIP {
 		vaultData.Spec.VaultIp = pod.Status.PodIP
+		timestamp := time.Now().Format(time.RFC3339)
+		r.VaultMetrics.VaultInfo.With(prometheus.Labels{
+			"vaultName":      vaultData.Spec.VaultName,
+			"vaultUid":       vaultData.Spec.VaultUid,
+			"vaultNamespace": vaultData.Spec.VaultNamespace,
+			"vaultIp":        vaultData.Spec.VaultIp,
+			"vaultImage":     vaultData.Spec.VaultImage,
+			"timestamp":      timestamp,
+		}).Set(1)
 		if err := r.Client.Update(ctx, vaultData); err != nil {
 			logger.Error(err, "Failed to update VaultData")
-			return ctrl.Result{}, err
+			return err
 		}
 		logger.Info("VaultData PodIp updated to " + vaultData.Spec.VaultIp)
 	}
@@ -298,7 +394,7 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			status.Name = pod.Status.ContainerStatuses[0].Name
 			if err := r.Client.Update(ctx, vaultData); err != nil {
 				logger.Error(err, "Failed to update VaultData")
-				return ctrl.Result{}, err
+				return err
 			}
 			logger.Info("VaultData Container Name updated to " + status.Name)
 		}
@@ -306,7 +402,7 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			status.Ready = pod.Status.ContainerStatuses[0].Ready
 			if err := r.Client.Update(ctx, vaultData); err != nil {
 				logger.Error(err, "Failed to update VaultData")
-				return ctrl.Result{}, err
+				return err
 			}
 			logger.Info("VaultData Container Ready updated to " + fmt.Sprintf("%t", status.Ready))
 		}
@@ -314,35 +410,35 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			status.State.Running = pod.Status.ContainerStatuses[0].State.Running
 			if err := r.Client.Update(ctx, vaultData); err != nil {
 				logger.Error(err, "Failed to update VaultData")
-				return ctrl.Result{}, err
+				return err
 			}
 			logger.Info("VaultData Container Liveness updated to " + fmt.Sprintf("%t", status.State.Running != nil))
 		}
 	}
 
-	// if vaultData.Spec.VaultMemUsage != vaultMetrics.Containers[0].Usage.Memory().String() {
-	// 	vaultData.Spec.VaultMemUsage = vaultMetrics.Containers[0].Usage.Memory().String()
-	// 	if err := r.Client.Update(ctx, vaultData); err != nil {
-	// 		logger.Error(err, "Failed to update VaultData")
-	// 		return ctrl.Result{}, err
-	// 	}
-	// 	logger.Info("VaultData MemoryUsage updated to " + vaultData.Spec.VaultMemUsage)
-	// }
+	if vaultData.Spec.VaultMemUsage != memoryUsagePercentStr {
+		vaultData.Spec.VaultMemUsage = memoryUsagePercentStr
+		if err := r.Client.Update(ctx, vaultData); err != nil {
+			logger.Error(err, "Failed to update VaultData")
+			return err
+		}
+		logger.Info("VaultData Memory Usage updated to " + vaultData.Spec.VaultMemUsage)
+	}
 
-	// if vaultData.Spec.VaultCPUUsage != vaultMetrics.Containers[0].Usage.Cpu().String() {
-	// 	vaultData.Spec.VaultCPUUsage = vaultMetrics.Containers[0].Usage.Cpu().String()
-	// 	if err := r.Client.Update(ctx, vaultData); err != nil {
-	// 		logger.Error(err, "Failed to update VaultData")
-	// 		return ctrl.Result{}, err
-	// 	}
-	// 	logger.Info("VaultData CPUUsage updated to " + vaultData.Spec.VaultCPUUsage)
-	// }
+	if vaultData.Spec.VaultCPUUsage != cpuUsagePercentStr {
+		vaultData.Spec.VaultCPUUsage = cpuUsagePercentStr
+		if err := r.Client.Update(ctx, vaultData); err != nil {
+			logger.Error(err, "Failed to update VaultData")
+			return err
+		}
+		logger.Info("VaultData CPU Usage updated to " + vaultData.Spec.VaultCPUUsage)
+	}
 
 	if vaultData.Spec.VaultReplicas != deployment.Status.Replicas {
 		vaultData.Spec.VaultReplicas = deployment.Status.Replicas
 		if err := r.Client.Update(ctx, vaultData); err != nil {
 			logger.Error(err, "Failed to update VaultData")
-			return ctrl.Result{}, err
+			return err
 		}
 		logger.Info("VaultData Replicas updated to " + string(vaultData.Spec.VaultReplicas))
 	}
@@ -351,18 +447,63 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		vaultData.Spec.VaultImage = deployment.Spec.Template.Spec.Containers[0].Image
 		if err := r.Client.Update(ctx, vaultData); err != nil {
 			logger.Error(err, "Failed to update VaultData")
-			return ctrl.Result{}, err
+			return err
 		}
 		logger.Info("VaultData Image updated to " + vaultData.Spec.VaultImage)
 	}
 
-	// annotations := u.GetAnnotations()
-	// logger.Info("Vault Annotations: " + fmt.Sprintf("%v", annotations))
+	return nil
+}
 
-	// nextRun := time.Now().Add(10 * time.Second)
-	// return ctrl.Result{RequeueAfter: nextRun.Sub(time.Now())}, nil
+// manages the finalizers for the Vault CRD.
+func (r *VaultMonReconciler) manageFinalizers(ctx context.Context, u *unstructured.Unstructured) error {
+	logger := ctrl.Log
+	vaultFinalizer := "vault.banzaicloud.com/finalizer2"
 
-	return ctrl.Result{}, nil
+	logger.Info("Vault finalizers" + fmt.Sprintf("%v", u.GetFinalizers()))
+
+	if !containsString(u.GetFinalizers(), vaultFinalizer) {
+		u.SetFinalizers(append(u.GetFinalizers(), vaultFinalizer))
+		if err := r.Update(ctx, u); err != nil {
+			logger.Error(err, "Failed to add finalizer to Vault CRD")
+			return err
+		}
+		logger.Info("Added finalizer to Vault CRD")
+	}
+
+	if !u.GetDeletionTimestamp().IsZero() {
+		if containsString(u.GetFinalizers(), vaultFinalizer) {
+			logger.Info("Deleting VaultData")
+			u.SetFinalizers(removeString(u.GetFinalizers(), vaultFinalizer))
+			if err := r.Update(ctx, u); err != nil {
+				logger.Error(err, "Failed to remove finalizer from Vault CRD")
+				return err
+			}
+			logger.Info("Removed finalizer from Vault CRD")
+		}
+		return nil
+	}
+
+	return nil
+}
+
+func logSimplified(message string, keyValuePairs ...interface{}) {
+	logger := ctrl.Log
+
+	keys := make([]interface{}, 0, len(keyValuePairs)/2)
+	values := make([]interface{}, 0, len(keyValuePairs)/2)
+
+	for i := 0; i < len(keyValuePairs); i += 2 {
+		keys = append(keys, keyValuePairs[i])
+		values = append(values, keyValuePairs[i+1])
+	}
+
+	msg := message
+	for i, key := range keys {
+		msg = fmt.Sprintf("%s %s=%v", msg, key, values[i])
+	}
+
+	logger.Info(msg)
 }
 
 func containsString(slice []string, s string) bool {

@@ -1,4 +1,3 @@
----
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -43,33 +42,9 @@ rules:
   - update
   - watch
 - apiGroups:
-  - apps
-  resources:
-  - deployments
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
   - metrics.k8s.io
   resources:
   - pods
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - rossoperator.io
-  resources:
-  - vaultmons
   verbs:
   - create
   - delete

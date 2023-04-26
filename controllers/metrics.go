@@ -17,8 +17,8 @@ func NewVaultMonMetrics(registry *prometheus.Registry) *VaultMonMetrics {
 		"vaultUid",
 		"vaultNamespace",
 		"vaultIp",
-		// "vaultReplicas",
 		"vaultImage",
+		"timestamp",
 	})
 
 	registry.MustRegister(vaultInfo)

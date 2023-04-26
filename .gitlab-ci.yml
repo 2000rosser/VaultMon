@@ -1,62 +1,62 @@
-stages:
-  - test
-  - build
-  - deploy
+# stages:
+#   - test
+#   - build
+#   - deploy
 
-variables:
-  GO_VERSION: "1.20.3"
-  IMAGE_NAME: "2000rosser/controller"
-  IMAGE_TAG: "latest"
+# variables:
+#   GO_VERSION: "1.20.3"
+#   IMAGE_NAME: "2000rosser/controller"
+#   IMAGE_TAG: "latest"
 
-.default_job_template: &default_job
-  image: golang:${GO_VERSION}
-  cache:
-    key: "${CI_JOB_NAME}-${CI_COMMIT_REF_SLUG}"
-    paths:
-      - go/pkg/mod/
+# .default_job_template: &default_job
+#   image: golang:${GO_VERSION}
+#   cache:
+#     key: "${CI_JOB_NAME}-${CI_COMMIT_REF_SLUG}"
+#     paths:
+#       - go/pkg/mod/
 
-test:
-  <<: *default_job
-  stage: test
-  tags:
-    - operator
-  script:
-    - go mod tidy
-    - make generate
-    - make manifests
+# test:
+#   <<: *default_job
+#   stage: test
+#   tags:
+#     - operator
+#   script:
+#     - go mod tidy
+#     - make generate
+#     - make manifests
 
-build:
-  <<: *default_job
-  stage: build
-  tags:
-    - operator
-  needs: ["test"]
-  script:
-    - docker login -u $DOCKERHUB_USERNAME -p $DOCKERHUB_TOKEN
-    - make docker-build docker-push
-    - docker save $IMAGE_NAME:$IMAGE_TAG > image.tar
-  artifacts:
-    paths:
-      - image.tar
+# build:
+#   <<: *default_job
+#   stage: build
+#   tags:
+#     - operator
+#   needs: ["test"]
+#   script:
+#     - docker login -u $DOCKERHUB_USERNAME -p $DOCKERHUB_TOKEN
+#     - make docker-build docker-push
+#     - docker save $IMAGE_NAME:$IMAGE_TAG > image.tar
+#   artifacts:
+#     paths:
+#       - image.tar
 
-deploy:
-  <<: *default_job
-  stage: deploy
-  tags:
-    - operator
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-  needs: ["build"]
-  script:
-    - docker load < image.tar
-    - curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.11.1/kind-linux-amd64
-    - chmod +x ./kind
-    - sudo mv kind /usr/local/bin/
-    - kind create cluster
-    - kind load docker-image $IMAGE_NAME:$IMAGE_TAG
-    - kubectl create namespace monitoring
-    - kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/release-0.50/bundle.yaml
-    - sleep 10
-    - make deploy
-    
+# deploy:
+#   <<: *default_job
+#   stage: deploy
+#   tags:
+#     - operator
+#   rules:
+#     - if: '$CI_COMMIT_BRANCH == "main"'
+#   needs: ["build"]
+#   script:
+#     - docker load < image.tar
+#     - curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.11.1/kind-linux-amd64
+#     - chmod +x ./kind
+#     - sudo mv kind /usr/local/bin/
+#     - kind create cluster
+#     - kind load docker-image $IMAGE_NAME:$IMAGE_TAG
+#     - kubectl create namespace monitoring
+#     - kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/release-0.50/bundle.yaml
+#     - sleep 10
+#     - make deploy
+
 

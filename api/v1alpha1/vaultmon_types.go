@@ -32,7 +32,7 @@ type VaultMonSpec struct {
 	VaultReplicas  int32                `json:"replicas,omitempty"`
 	VaultEndpoints []string             `json:"endpoints,omitempty"`
 	VaultStatus    []v1.ContainerStatus `json:"status,omitempty"`
-	VaultVolumes   []string             `json:"volumes,omitempty"`
+	VaultVolumes   []v1.Volume          `json:"volumes,omitempty"`
 	VaultIngress   string               `json:"ingress,omitempty"`
 	VaultCPUUsage  string               `json:"cpuUsage,omitempty"`
 	VaultMemUsage  string               `json:"memUsage,omitempty"`

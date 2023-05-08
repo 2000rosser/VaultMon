@@ -109,8 +109,10 @@ func (in *VaultMonSpec) DeepCopyInto(out *VaultMonSpec) {
 	}
 	if in.VaultVolumes != nil {
 		in, out := &in.VaultVolumes, &out.VaultVolumes
-		*out = make([]string, len(*in))
-		copy(*out, *in)
+		*out = make([]v1.Volume, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 }
 

@@ -74,11 +74,13 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	logger.Info("Current Vault being reconciled", "name", u.GetName(), "namespace", u.GetNamespace(), "uid", u.GetUID())
 	logger.Info("Processing Vault item", "name", u.GetName(), "namespace", u.GetNamespace(), "uid", u.GetUID())
 
+	//get the vault client
 	clientset, dynamicClient, err := r.getKubeClient(ctx, u)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
+	//get the vault pod
 	podList := &corev1.PodList{}
 	labelSelector := labels.SelectorFromSet(map[string]string{"vault_cr": u.GetName()})
 	if err := r.Client.List(ctx, podList, client.InNamespace(u.GetNamespace()), client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
@@ -92,6 +94,7 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		break
 	}
 
+	//check if the vault pod is present
 	if vaultPodName == "" {
 		logger.Info("Vault pod not present, requeing reconcile after 10 seconds")
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
@@ -106,6 +109,7 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	logger.Info("Creating VaultData")
 	logger.Info("Getting Vault Metrics")
 
+	//get the vault metrics
 	cpuUsagePercentStr, memoryUsagePercentStr, err := r.getVaultMetrics(ctx, dynamicClient, pod, u)
 	if err != nil {
 		logger.Info("Failed to get Vault metrics, requeing reconcile after 30 seconds")
@@ -113,20 +117,28 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
+	//get the deployment
 	deployment, err := clientset.AppsV1().Deployments(u.GetNamespace()).Get(ctx, u.GetName()+"-configurer", metav1.GetOptions{})
 	if err != nil {
 		logger.Error(err, "Failed to get deployment, requeing reconcile after 10 seconds")
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
+	//create or update the VaultMon CRD
 	err = r.createOrUpdateVaultMonCRD(clientset, deployment, ctx, req, u, pod, cpuUsagePercentStr, memoryUsagePercentStr)
 	if err != nil {
 		logger.Error(err, "Failed to create or update VaultMon CRD")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
 	}
 
+	//add/remove the finalizers
 	err = r.manageFinalizers(ctx, u)
+	if err != nil {
+		logger.Error(err, "Failed to manage finalizers")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+	}
 
+	//requeue the reconcile after 10 seconds
 	nextRun := time.Now().Add(10 * time.Second)
 	return ctrl.Result{RequeueAfter: nextRun.Sub(time.Now())}, nil
 
@@ -135,6 +147,7 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 // a function to fetch the Vault CRD.
 func (r *VaultMonReconciler) fetchVaultCRD(ctx context.Context, req ctrl.Request) (*unstructured.Unstructured, error) {
+	//get the vault crd
 	u := unstructured.Unstructured{}
 	u.SetGroupVersionKind(schema.GroupVersionKind{
 		Kind:    "Vault",
@@ -157,10 +170,12 @@ func (r *VaultMonReconciler) getKubeClient(ctx context.Context, vault *unstructu
 		// return ctrl.Result{}, err
 	}
 
+	//set runOutsideCluster to true for now
 	runOutsideCluster = true
 
 	var config *rest.Config
 
+	//get the config file if running outside the cluster
 	if runOutsideCluster {
 		kubeconfig := filepath.Join(os.Getenv("HOME"), ".kube", "config")
 		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
@@ -174,11 +189,13 @@ func (r *VaultMonReconciler) getKubeClient(ctx context.Context, vault *unstructu
 		}
 	}
 
+	//create the clientset
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		panic(err.Error())
 	}
 
+	//create the dynamic client
 	dynamicClient, err := dynamic.NewForConfig(config)
 	if err != nil {
 		logger.Error(err, "Failed to create dynamic client")
@@ -191,13 +208,15 @@ func (r *VaultMonReconciler) getKubeClient(ctx context.Context, vault *unstructu
 // a function that gets the vaultMetrics
 func (r *VaultMonReconciler) getVaultMetrics(ctx context.Context, dynamicClient dynamic.Interface, pod *corev1.Pod, u *unstructured.Unstructured) (string, string, error) {
 	logger := ctrl.Log
+
+	//get the pod metrics from the metrics server
 	podMetricsGVR := schema.GroupVersionResource{
 		Group:    "metrics.k8s.io",
 		Version:  "v1beta1",
 		Resource: "pods",
 	}
 
-	//fetch pod metrics
+	//fetch pod metrics for vault pod
 	podList := &corev1.PodList{}
 	labelSelector := labels.SelectorFromSet(map[string]string{"vault_cr": u.GetName()})
 	if err := r.Client.List(ctx, podList, client.InNamespace(u.GetNamespace()), client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
@@ -221,6 +240,7 @@ func (r *VaultMonReconciler) getVaultMetrics(ctx context.Context, dynamicClient 
 		return "", "", nil
 	}
 
+	//get the memory and cpu usage
 	containerMetrics := podMetrics.Object["containers"].([]interface{})[0].(map[string]interface{})
 	usage := containerMetrics["usage"].(map[string]interface{})
 	memoryUsageStr := usage["memory"].(string)
@@ -238,6 +258,7 @@ func (r *VaultMonReconciler) getVaultMetrics(ctx context.Context, dynamicClient 
 		return "", "", err
 	}
 
+	//convert the memory and cpu usage to percentages
 	cpuLimit := pod.Spec.Containers[0].Resources.Limits.Cpu()
 	memoryLimit := pod.Spec.Containers[0].Resources.Limits.Memory()
 
@@ -259,12 +280,15 @@ func (r *VaultMonReconciler) getVaultMetrics(ctx context.Context, dynamicClient 
 // a function that creates or updates the VaultMon CRD
 func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Clientset, deployment *appsv1.Deployment, ctx context.Context, req ctrl.Request, u *unstructured.Unstructured, pod *corev1.Pod, cpuUsagePercentStr string, memoryUsagePercentStr string) error {
 	logger := ctrl.Log
+
+	//get the image
 	image, err := clientset.CoreV1().Pods(u.GetNamespace()).Get(ctx, u.GetName()+"-0", metav1.GetOptions{})
 	if err != nil {
 		panic(err.Error())
 	}
 	// logger.Info("VAULT_IMAGE=" + image.Spec.Containers[0].Image)
 
+	//retrieve the ingress of vault
 	ingressList := &v1.IngressList{}
 	labelSelector := labels.SelectorFromSet(map[string]string{"vault_cr": u.GetName()})
 	if err := r.Client.List(ctx, ingressList, client.InNamespace(u.GetNamespace()), client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
@@ -274,6 +298,7 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 
 	var vaultIngress *v1.Ingress
 
+	//store the ingress in a vaultIngress variable
 	if len(ingressList.Items) > 0 {
 		vault2Ingress := &ingressList.Items[0]
 		vaultIngress = &v1.Ingress{
@@ -290,6 +315,7 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 		vaultIngress = nil
 	}
 
+	//retrieve the endpoints of vault
 	var vaultEndpoints []string
 	if vaultIngress != nil {
 		for _, rule := range vaultIngress.Spec.Rules {
@@ -303,6 +329,7 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 		vaultEndpoints = nil
 	}
 
+	//retrieve the load balancer endpoints of vault
 	serviceList := &corev1.ServiceList{}
 	svcLabelSelector := labels.SelectorFromSet(map[string]string{"vault_cr": u.GetName()})
 	if err := r.Client.List(ctx, serviceList, client.InNamespace("default"), client.MatchingLabelsSelector{Selector: svcLabelSelector}); err != nil {
@@ -310,6 +337,7 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 		return err
 	}
 
+	//store the load balancer endpoints in a loadBalancerEndpoints variable
 	var loadBalancerEndpoints []string
 	for _, svc := range serviceList.Items {
 		if svc.Spec.Type == corev1.ServiceTypeLoadBalancer {
@@ -322,15 +350,19 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 		}
 	}
 
+	//create a new VaultMon CRD
 	vaultData := &rossoperatoriov1alpha1.VaultMon{}
 	uniqueID := u.GetUID()
 	vaultMonName := fmt.Sprintf("%s-%s", "vaultmon", uniqueID)
+	//check if the VaultMon CRD already exists
 	err = r.Client.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: vaultMonName}, vaultData)
 	if err != nil {
+		//if the VaultMon CRD does not exist, create a new one
 		if errors.IsNotFound(err) {
 			logger.Info("Creating new VaultMon for Vault item", "name", u.GetName(), "namespace", u.GetNamespace(), "uid", u.GetUID())
 			uniqueID := u.GetUID()
 			vaultMonName := fmt.Sprintf("%s-%s", "vaultmon", uniqueID)
+			//use the UID of the Vault item as the name of the VaultMon CRD and the namespace of the Vault item as the namespace of the VaultMon CRD
 			vaultData = &rossoperatoriov1alpha1.VaultMon{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      vaultMonName,
@@ -372,6 +404,7 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 				logger.Error(err, "Failed to create VaultData")
 				return err
 			}
+			//log all the information about the VaultMon CRD
 			logger.Info("VaultData created")
 			logSimplified("VAULT_NAME=" + vaultData.Spec.VaultName)
 			logSimplified("VAULT_NAMESPACE=" + vaultData.Spec.VaultNamespace)
@@ -428,6 +461,7 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 		}
 	}
 
+	//check for differences between the VaultMon CRD and the Vault item for each value
 	if vaultData.Spec.VaultName != u.GetName() {
 		vaultData.Spec.VaultName = u.GetName()
 		if err := r.Client.Update(ctx, vaultData); err != nil {
@@ -645,13 +679,7 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 			logger.Error(err, "Failed to update VaultData")
 			return err
 		}
-		// if vaultData.Spec.VaultIngress.Spec.DefaultBackend != nil {
-		// 	serviceName := vaultData.Spec.VaultIngress.Spec.DefaultBackend.Service.Name
-		// 	servicePort := vaultData.Spec.VaultIngress.Spec.DefaultBackend.Service.Port.Number
 
-		// 	logSimplified("VAULT_INGRESS_NAME=" + serviceName)
-		// 	logSimplified("VAULT_INGRESS_SERVICE_PORT=" + strconv.Itoa(int(servicePort)))
-		// }
 		r.updatePrometheusLabels(vaultData)
 	}
 
@@ -725,6 +753,7 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 
 func (r *VaultMonReconciler) updatePrometheusLabels(vaultData *rossoperatoriov1alpha1.VaultMon) {
 
+	//Update Prometheus Labels
 	vaultStatuses := make([]string, len(vaultData.Spec.VaultStatus))
 	for i, status := range vaultData.Spec.VaultStatus {
 		vaultStatuses[i] = fmt.Sprintf("ContainerName=%s,Ready=%t,Liveness=%t", status.Name, status.Ready, status.State.Running != nil)
@@ -775,6 +804,7 @@ func (r *VaultMonReconciler) updatePrometheusLabels(vaultData *rossoperatoriov1a
 
 }
 
+// converts a slice of corev1.Volume to a string
 func volumeSliceToString(volumes []corev1.Volume) string {
 	volumeStrings := make([]string, len(volumes))
 	for i, v := range volumes {
@@ -834,6 +864,7 @@ func (r *VaultMonReconciler) manageFinalizers(ctx context.Context, u *unstructur
 	return nil
 }
 
+// simplifies the logging of key value pairs
 func logSimplified(message string, keyValuePairs ...interface{}) {
 	logger := ctrl.Log
 
@@ -850,7 +881,7 @@ func logSimplified(message string, keyValuePairs ...interface{}) {
 		if i+1 < len(keyValuePairs) {
 			values = append(values, keyValuePairs[i+1])
 		} else {
-			values = append(values, nil) // or some default value
+			values = append(values, nil)
 		}
 	}
 

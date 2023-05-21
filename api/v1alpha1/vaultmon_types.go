@@ -18,25 +18,27 @@ package v1alpha1
 
 import (
 	v1 "k8s.io/api/core/v1"
+	netv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // VaultMonSpec defines the desired state of VaultMon
 type VaultMonSpec struct {
-	VaultName      string               `json:"name,omitempty"`
-	VaultUid       string               `json:"uid,omitempty"`
-	VaultNamespace string               `json:"namespace,omitempty"`
-	VaultIp        string               `json:"ip,omitempty"`
-	VaultLabels    map[string]string    `json:"labels,omitempty"`
-	VaultSecrets   int64                `json:"secrets,omitempty"`
-	VaultReplicas  int32                `json:"replicas,omitempty"`
-	VaultEndpoints []string             `json:"endpoints,omitempty"`
-	VaultStatus    []v1.ContainerStatus `json:"status,omitempty"`
-	VaultVolumes   []v1.Volume          `json:"volumes,omitempty"`
-	VaultIngress   string               `json:"ingress,omitempty"`
-	VaultCPUUsage  string               `json:"cpuUsage,omitempty"`
-	VaultMemUsage  string               `json:"memUsage,omitempty"`
-	VaultImage     string               `json:"image,omitempty"`
+	VaultName        string               `json:"name,omitempty"`
+	VaultUid         string               `json:"uid,omitempty"`
+	VaultNamespace   string               `json:"namespace,omitempty"`
+	VaultIp          string               `json:"ip,omitempty"`
+	VaultLabels      map[string]string    `json:"labels,omitempty"`
+	VaultAnnotations map[string]string    `json:"annotations,omitempty"`
+	VaultReplicas    int32                `json:"replicas,omitempty"`
+	VaultEndpoints   []string             `json:"endpoints,omitempty"`
+	VaultStatus      []v1.ContainerStatus `json:"status,omitempty"`
+	VaultVolumes     []v1.Volume          `json:"volumes,omitempty"`
+	VaultIngress     *netv1.Ingress       `json:"ingress,omitempty"`
+	VaultCPUUsage    string               `json:"cpuUsage,omitempty"`
+	VaultMemUsage    string               `json:"memUsage,omitempty"`
+	VaultImage       string               `json:"image,omitempty"`
+	VaultVersion     string               `json:"version,omitempty"`
 }
 
 // VaultMonStatus defines the observed state of VaultMon

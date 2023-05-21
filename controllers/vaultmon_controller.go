@@ -3,7 +3,9 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strconv"
+	"strings"
 	"time"
 
 	rossoperatoriov1alpha1 "github.com/2000rosser/FYP.git/api/v1alpha1"
@@ -77,7 +79,25 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	pod, err := clientset.CoreV1().Pods(u.GetNamespace()).Get(ctx, u.GetName()+"-0", metav1.GetOptions{})
+	podList := &corev1.PodList{}
+	labelSelector := labels.SelectorFromSet(map[string]string{"vault_cr": u.GetName()})
+	if err := r.Client.List(ctx, podList, client.InNamespace(u.GetNamespace()), client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
+		logger.Error(err, "Failed to list pods")
+		return ctrl.Result{}, err
+	}
+
+	var vaultPodName string
+	for _, p := range podList.Items {
+		vaultPodName = p.Name
+		break
+	}
+
+	if vaultPodName == "" {
+		logger.Info("Vault pod not present, requeing reconcile after 10 seconds")
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	pod, err := clientset.CoreV1().Pods(u.GetNamespace()).Get(ctx, vaultPodName, metav1.GetOptions{})
 	if err != nil {
 		logger.Info("Vault pod not present, requeing reconcile after 10 seconds")
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
@@ -86,7 +106,7 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	logger.Info("Creating VaultData")
 	logger.Info("Getting Vault Metrics")
 
-	cpuUsagePercentStr, memoryUsagePercentStr, err := r.getVaultMetrics(ctx, dynamicClient, pod)
+	cpuUsagePercentStr, memoryUsagePercentStr, err := r.getVaultMetrics(ctx, dynamicClient, pod, u)
 	if err != nil {
 		logger.Info("Failed to get Vault metrics, requeing reconcile after 30 seconds")
 		logger.Info("Is the metrics server running?")
@@ -102,18 +122,15 @@ func (r *VaultMonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	err = r.createOrUpdateVaultMonCRD(clientset, deployment, ctx, req, u, pod, cpuUsagePercentStr, memoryUsagePercentStr)
 	if err != nil {
 		logger.Error(err, "Failed to create or update VaultMon CRD")
-		return ctrl.Result{}, err
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
 	}
 
 	err = r.manageFinalizers(ctx, u)
 
-	// annotations := u.GetAnnotations()
-	// logger.Info("Vault Annotations: " + fmt.Sprintf("%v", annotations))
+	nextRun := time.Now().Add(10 * time.Second)
+	return ctrl.Result{RequeueAfter: nextRun.Sub(time.Now())}, nil
 
-	// nextRun := time.Now().Add(10 * time.Second)
-	// return ctrl.Result{RequeueAfter: nextRun.Sub(time.Now())}, nil
-
-	return ctrl.Result{}, nil
+	// return ctrl.Result{}, nil
 }
 
 // a function to fetch the Vault CRD.
@@ -172,7 +189,7 @@ func (r *VaultMonReconciler) getKubeClient(ctx context.Context, vault *unstructu
 }
 
 // a function that gets the vaultMetrics
-func (r *VaultMonReconciler) getVaultMetrics(ctx context.Context, dynamicClient dynamic.Interface, pod *corev1.Pod) (string, string, error) {
+func (r *VaultMonReconciler) getVaultMetrics(ctx context.Context, dynamicClient dynamic.Interface, pod *corev1.Pod, u *unstructured.Unstructured) (string, string, error) {
 	logger := ctrl.Log
 	podMetricsGVR := schema.GroupVersionResource{
 		Group:    "metrics.k8s.io",
@@ -181,11 +198,29 @@ func (r *VaultMonReconciler) getVaultMetrics(ctx context.Context, dynamicClient 
 	}
 
 	//fetch pod metrics
-	podMetrics, err := dynamicClient.Resource(podMetricsGVR).Namespace("default").Get(ctx, "vault-0", metav1.GetOptions{})
+	podList := &corev1.PodList{}
+	labelSelector := labels.SelectorFromSet(map[string]string{"vault_cr": u.GetName()})
+	if err := r.Client.List(ctx, podList, client.InNamespace(u.GetNamespace()), client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
+		logger.Error(err, "Failed to list pods")
+		return "", "", err
+	}
+
+	var vaultPod *corev1.Pod
+	for _, p := range podList.Items {
+		vaultPod = &p
+		break
+	}
+
+	if vaultPod == nil {
+		return "", "", fmt.Errorf("No Vault pod found")
+	}
+
+	podMetrics, err := dynamicClient.Resource(podMetricsGVR).Namespace(u.GetNamespace()).Get(ctx, vaultPod.Name, metav1.GetOptions{})
 	if err != nil {
 		logger.Error(err, "Failed to fetch pod metrics, requeing reconcile after 10 seconds")
 		return "", "", nil
 	}
+
 	containerMetrics := podMetrics.Object["containers"].([]interface{})[0].(map[string]interface{})
 	usage := containerMetrics["usage"].(map[string]interface{})
 	memoryUsageStr := usage["memory"].(string)
@@ -224,22 +259,32 @@ func (r *VaultMonReconciler) getVaultMetrics(ctx context.Context, dynamicClient 
 // a function that creates or updates the VaultMon CRD
 func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Clientset, deployment *appsv1.Deployment, ctx context.Context, req ctrl.Request, u *unstructured.Unstructured, pod *corev1.Pod, cpuUsagePercentStr string, memoryUsagePercentStr string) error {
 	logger := ctrl.Log
-	image, err := clientset.CoreV1().Pods("default").Get(ctx, "vault-0", metav1.GetOptions{})
+	image, err := clientset.CoreV1().Pods(u.GetNamespace()).Get(ctx, u.GetName()+"-0", metav1.GetOptions{})
 	if err != nil {
 		panic(err.Error())
 	}
 	// logger.Info("VAULT_IMAGE=" + image.Spec.Containers[0].Image)
 
 	ingressList := &v1.IngressList{}
-	labelSelector := labels.SelectorFromSet(map[string]string{"vault_cr": "vault"})
-	if err := r.Client.List(ctx, ingressList, client.InNamespace("default"), client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
+	labelSelector := labels.SelectorFromSet(map[string]string{"vault_cr": u.GetName()})
+	if err := r.Client.List(ctx, ingressList, client.InNamespace(u.GetNamespace()), client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
 		logger.Error(err, "Failed to list Ingress resources")
 		return err
 	}
 
 	var vaultIngress *v1.Ingress
+
 	if len(ingressList.Items) > 0 {
-		vaultIngress = &ingressList.Items[0]
+		vault2Ingress := &ingressList.Items[0]
+		vaultIngress = &v1.Ingress{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      vault2Ingress.Name,
+				Namespace: vault2Ingress.Namespace,
+			},
+			Spec: v1.IngressSpec{
+				DefaultBackend: vault2Ingress.Spec.DefaultBackend,
+			},
+		}
 	} else {
 		logger.Info("No Ingress found for the Vault instance")
 		vaultIngress = nil
@@ -259,7 +304,7 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 	}
 
 	serviceList := &corev1.ServiceList{}
-	svcLabelSelector := labels.SelectorFromSet(map[string]string{"vault_cr": "vault"})
+	svcLabelSelector := labels.SelectorFromSet(map[string]string{"vault_cr": u.GetName()})
 	if err := r.Client.List(ctx, serviceList, client.InNamespace("default"), client.MatchingLabelsSelector{Selector: svcLabelSelector}); err != nil {
 		logger.Error(err, "Failed to list Service resources")
 		return err
@@ -310,16 +355,17 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 
 					VaultImage: deployment.Spec.Template.Spec.Containers[0].Image,
 
-					VaultIngress: func() string {
-						if vaultIngress != nil && len(vaultIngress.Spec.Rules) > 0 {
-							return vaultIngress.Spec.Rules[0].Host
-						}
-						return "None"
-					}(),
+					VaultIngress: vaultIngress,
 
 					VaultVolumes: pod.Spec.Volumes,
 
 					VaultEndpoints: vaultEndpoints,
+
+					VaultVersion: image.Spec.Containers[0].Image,
+
+					VaultLabels: deployment.Labels,
+
+					VaultAnnotations: deployment.Spec.Template.Annotations,
 				},
 			}
 			if err := r.Client.Create(ctx, vaultData); err != nil {
@@ -335,14 +381,23 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 				logSimplified("CONTAINER_NAME=" + status.Name)
 				logSimplified("CONTAINER_READY=" + fmt.Sprintf("%t", status.Ready))
 				logSimplified("CONTAINER_LIVENESS=" + fmt.Sprintf("%t", status.State.Running != nil))
+				logSimplified("CONTAINER_RESTARTS=" + fmt.Sprintf("%d", status.RestartCount))
+				logSimplified("CONTAINER_TERMINATION=" + fmt.Sprintf("%t", status.State.Terminated != nil))
+				logSimplified("CONTAINER_WAITING=" + fmt.Sprintf("%t", status.State.Waiting != nil))
 			}
 			logSimplified("VAULT_MEMORY_USAGE=" + vaultData.Spec.VaultMemUsage)
 			logSimplified("VAULT_CPU_USAGE=" + vaultData.Spec.VaultCPUUsage)
-			// logSimplified("VAULT_REPLICAS=" + string(vaultData.Spec.VaultReplicas))
-			logSimplified("VAULT_REPLICAS=3")
+			logSimplified("VAULT_REPLICAS=" + strconv.Itoa(int(vaultData.Spec.VaultReplicas)))
 			logSimplified("VAULT_IMAGE=" + vaultData.Spec.VaultImage)
-			logSimplified("VAULT_IMAGE=" + image.Spec.Containers[0].Image)
-			logSimplified("VAULT_INGRESS=" + vaultData.Spec.VaultIngress)
+			logSimplified("VAULT_VERSION=" + vaultData.Spec.VaultVersion)
+			if vaultData.Spec.VaultIngress.Spec.DefaultBackend != nil {
+				serviceName := vaultData.Spec.VaultIngress.Spec.DefaultBackend.Service.Name
+				servicePort := vaultData.Spec.VaultIngress.Spec.DefaultBackend.Service.Port.Number
+
+				logSimplified("VAULT_INGRESS_NAME=" + serviceName)
+				logSimplified("VAULT_INGRESS_SERVICE_PORT=" + strconv.Itoa(int(servicePort)))
+			}
+
 			for _, volume := range vaultData.Spec.VaultVolumes {
 				logSimplified("VOLUME_NAME=" + volume.Name)
 			}
@@ -354,16 +409,17 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 				logSimplified("VAULT_ENDPOINTS=None")
 			}
 
-			timestamp := time.Now().Format(time.RFC3339)
-
-			r.VaultMetrics.VaultInfo.With(prometheus.Labels{
-				"vaultName":      vaultData.Spec.VaultName,
-				"vaultUid":       vaultData.Spec.VaultUid,
-				"vaultNamespace": vaultData.Spec.VaultNamespace,
-				"vaultIp":        vaultData.Spec.VaultIp,
-				"vaultImage":     vaultData.Spec.VaultImage,
-				"timestamp":      timestamp,
-			}).Set(1)
+			for key, value := range vaultData.Spec.VaultLabels {
+				logSimplified("VAULT_LABELS_" + key + "=" + value)
+			}
+			for key, value := range vaultData.Spec.VaultAnnotations {
+				//check if the value is over 100 characters
+				if len(value) > 100 {
+					value = value[:100] + "..."
+				}
+				logSimplified("VAULT_ANNOTATIONS_" + key + "=" + value)
+			}
+			r.updatePrometheusLabels(vaultData)
 			logger.Info("Vault metrics set")
 
 		} else {
@@ -374,119 +430,182 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 
 	if vaultData.Spec.VaultName != u.GetName() {
 		vaultData.Spec.VaultName = u.GetName()
-		timestamp := time.Now().Format(time.RFC3339)
-		r.VaultMetrics.VaultInfo.With(prometheus.Labels{
-			"vaultName":      vaultData.Spec.VaultName,
-			"vaultUid":       vaultData.Spec.VaultUid,
-			"vaultNamespace": vaultData.Spec.VaultNamespace,
-			"vaultIp":        vaultData.Spec.VaultIp,
-			"vaultImage":     vaultData.Spec.VaultImage,
-			"timestamp":      timestamp,
-		}).Set(1)
 		if err := r.Client.Update(ctx, vaultData); err != nil {
 			logger.Error(err, "Failed to update VaultData")
 			return err
 		}
 		logger.Info("VaultData updated", "vaultMonName", vaultData.Name)
 		logger.Info("VaultData Name updated to " + vaultData.Spec.VaultName)
+		r.updatePrometheusLabels(vaultData)
 	}
 
 	if vaultData.Spec.VaultNamespace != u.GetNamespace() {
 		vaultData.Spec.VaultNamespace = u.GetNamespace()
-		timestamp := time.Now().Format(time.RFC3339)
-		r.VaultMetrics.VaultInfo.With(prometheus.Labels{
-			"vaultName":      vaultData.Spec.VaultName,
-			"vaultUid":       vaultData.Spec.VaultUid,
-			"vaultNamespace": vaultData.Spec.VaultNamespace,
-			"vaultIp":        vaultData.Spec.VaultIp,
-			"vaultImage":     vaultData.Spec.VaultImage,
-			"timestamp":      timestamp,
-		}).Set(1)
 		if err := r.Client.Update(ctx, vaultData); err != nil {
 			logger.Error(err, "Failed to update VaultData")
 			return err
 		}
 		logger.Info("VaultData Namespace updated to " + vaultData.Spec.VaultNamespace)
+		r.updatePrometheusLabels(vaultData)
 	}
 
 	if vaultData.Spec.VaultUid != string(u.GetUID()) {
 		vaultData.Spec.VaultUid = string(u.GetUID())
-		timestamp := time.Now().Format(time.RFC3339)
-		r.VaultMetrics.VaultInfo.With(prometheus.Labels{
-			"vaultName":      vaultData.Spec.VaultName,
-			"vaultUid":       vaultData.Spec.VaultUid,
-			"vaultNamespace": vaultData.Spec.VaultNamespace,
-			"vaultIp":        vaultData.Spec.VaultIp,
-			"vaultImage":     vaultData.Spec.VaultImage,
-			"timestamp":      timestamp,
-		}).Set(1)
 		if err := r.Client.Update(ctx, vaultData); err != nil {
 			logger.Error(err, "Failed to update VaultData")
 			return err
 		}
 		logger.Info("VaultData Uid updated to " + vaultData.Spec.VaultUid)
+		r.updatePrometheusLabels(vaultData)
 	}
 
 	if vaultData.Spec.VaultIp != pod.Status.PodIP {
 		vaultData.Spec.VaultIp = pod.Status.PodIP
-		timestamp := time.Now().Format(time.RFC3339)
-		r.VaultMetrics.VaultInfo.With(prometheus.Labels{
-			"vaultName":      vaultData.Spec.VaultName,
-			"vaultUid":       vaultData.Spec.VaultUid,
-			"vaultNamespace": vaultData.Spec.VaultNamespace,
-			"vaultIp":        vaultData.Spec.VaultIp,
-			"vaultImage":     vaultData.Spec.VaultImage,
-			"timestamp":      timestamp,
-		}).Set(1)
 		if err := r.Client.Update(ctx, vaultData); err != nil {
 			logger.Error(err, "Failed to update VaultData")
 			return err
 		}
 		logger.Info("VaultData PodIp updated to " + vaultData.Spec.VaultIp)
+		r.updatePrometheusLabels(vaultData)
 	}
 
+	vaultStatusMap := make(map[string]corev1.ContainerStatus)
 	for _, status := range vaultData.Spec.VaultStatus {
-		for _, podStatus := range pod.Status.ContainerStatuses {
-			if status.Name == podStatus.Name {
-				if status.Ready != podStatus.Ready {
-					status.Ready = podStatus.Ready
-					if err := r.Client.Update(ctx, vaultData); err != nil {
-						logger.Error(err, "Failed to update VaultData")
-						return err
-					}
-					logger.Info("VaultData Container Ready updated to " + fmt.Sprintf("%t", status.Ready))
-				}
+		vaultStatusMap[status.Name] = status
+	}
 
-				previousLiveness := status.State.Running != nil
-				currentLiveness := podStatus.State.Running != nil
-				if previousLiveness != currentLiveness {
-					logger.Info("VaultData Container Liveness updated from " + fmt.Sprintf("%t", previousLiveness) + " to " + fmt.Sprintf("%t", currentLiveness))
-					status.State.Running = podStatus.State.Running
-					if err := r.Client.Update(ctx, vaultData); err != nil {
-						logger.Error(err, "Failed to update VaultData")
-						return err
-					}
+	podStatusMap := make(map[string]corev1.ContainerStatus)
+	for _, status := range pod.Status.ContainerStatuses {
+		podStatusMap[status.Name] = status
+	}
+
+	//compare the two maps
+	if !reflect.DeepEqual(vaultStatusMap, podStatusMap) {
+		logSimplified("Container statuses have changed")
+
+		//check if a container has been removed
+		if len(vaultStatusMap) > len(podStatusMap) {
+			for name, status := range vaultStatusMap {
+				if _, ok := podStatusMap[name]; !ok {
+					logSimplified("Container removed", "Name", name, "Ready", status.Ready, "Running", status.State.Running != nil)
 				}
 			}
 		}
+
+		for name, status := range podStatusMap {
+			if oldStatus, ok := vaultStatusMap[name]; ok {
+				// check if any status attribute has changed
+				if oldStatus.Ready != status.Ready ||
+					(oldStatus.State.Running != nil) != (status.State.Running != nil) ||
+					(oldStatus.State.Terminated != nil) != (status.State.Terminated != nil) ||
+					(oldStatus.State.Waiting != nil) != (status.State.Waiting != nil) {
+
+					// log old and new status if any status attribute has changed
+					logSimplified("Old Status", "Name", name, "Ready", oldStatus.Ready, "Running", oldStatus.State.Running != nil, "Terminated", oldStatus.State.Terminated != nil, "Waiting", oldStatus.State.Waiting != nil)
+					logSimplified("New Status", "Name", name, "Ready", status.Ready, "Running", status.State.Running != nil, "Terminated", status.State.Terminated != nil, "Waiting", status.State.Waiting != nil)
+
+					if oldStatus.Ready && !status.Ready {
+						logSimplified("Health Deterioration: Container not ready", "Name", name)
+					} else if !oldStatus.Ready && status.Ready {
+						logSimplified("Health Improvement: Container ready", "Name", name)
+					}
+
+					if oldStatus.State.Running != nil && status.State.Running == nil {
+						logSimplified("Health Deterioration: Container not running", "Name", name)
+					} else if oldStatus.State.Running == nil && status.State.Running != nil {
+						logSimplified("Health Improvement: Container running", "Name", name)
+					}
+
+					if oldStatus.State.Terminated == nil && status.State.Terminated != nil {
+						logSimplified("Health Deterioration: Container not terminated", "Name", name)
+					}
+
+					if oldStatus.State.Waiting != nil && status.State.Waiting == nil {
+						logSimplified("Health Improvement: Container no longer waiting", "Name", name)
+					} else if oldStatus.State.Waiting == nil && status.State.Waiting != nil {
+						logSimplified("Health Deterioration: Container waiting", "Name", name)
+					}
+
+					if oldStatus.RestartCount != status.RestartCount {
+						logSimplified("Container restart count changed", "Container Name", name, "New Restart Count", int(status.RestartCount))
+					}
+
+				}
+			} else {
+				logSimplified("Container added", "Name", name)
+			}
+		}
+
+		vaultData.Spec.VaultStatus = pod.Status.ContainerStatuses
+
+		if err := r.Client.Update(ctx, vaultData); err != nil {
+			logger.Error(err, "Failed to update VaultData")
+			return err
+		}
+		logSimplified("VaultData Container Statuses updated")
+		r.updatePrometheusLabels(vaultData)
 	}
 
 	if vaultData.Spec.VaultMemUsage != memoryUsagePercentStr {
+		memoryUsageThreshold := 80
+		prevMemUsage, _ := strconv.ParseFloat(vaultData.Spec.VaultMemUsage, 64)
+		currentMemUsage, _ := strconv.ParseFloat(memoryUsagePercentStr, 64)
+
+		if prevMemUsage > float64(memoryUsageThreshold) && currentMemUsage < float64(memoryUsageThreshold) {
+			logSimplified("Health Improvement: Memory usage is below threshold", "Current Usage", memoryUsagePercentStr)
+		}
+
 		vaultData.Spec.VaultMemUsage = memoryUsagePercentStr
+
+		memoryUsageFloat, err := strconv.ParseFloat(memoryUsagePercentStr, 64)
+		if err != nil {
+			logger.Error(err, "Failed to convert memoryUsagePercentStr to float")
+			return err
+		}
+
+		memoryUsagePercent := int(memoryUsageFloat)
+
+		if memoryUsagePercent > memoryUsageThreshold {
+			logSimplified("Health Deterioration: Memory usage exceeded threshold", "Current Usage", memoryUsagePercentStr)
+		}
 		if err := r.Client.Update(ctx, vaultData); err != nil {
 			logger.Error(err, "Failed to update VaultData")
 			return err
 		}
-		logger.Info("VaultData Memory Usage updated to " + vaultData.Spec.VaultMemUsage)
+		logSimplified("VaultData Memory Usage updated to " + vaultData.Spec.VaultMemUsage)
+		r.updatePrometheusLabels(vaultData)
 	}
 
 	if vaultData.Spec.VaultCPUUsage != cpuUsagePercentStr {
+
+		cpuUsageThreshold := 80
+		prevCPUUsage, _ := strconv.ParseFloat(vaultData.Spec.VaultCPUUsage, 64)
+		currentCPUUsage, _ := strconv.ParseFloat(cpuUsagePercentStr, 64)
+
+		if prevCPUUsage > float64(cpuUsageThreshold) && currentCPUUsage < float64(cpuUsageThreshold) {
+			logSimplified("Health Improvement: CPU usage is below threshold", "Current Usage", cpuUsagePercentStr)
+		}
+
 		vaultData.Spec.VaultCPUUsage = cpuUsagePercentStr
+
+		cpuUsageFloat, err := strconv.ParseFloat(cpuUsagePercentStr, 64)
+		if err != nil {
+			logger.Error(err, "Failed to convert cpuUsagePercentStr to float")
+			return err
+		}
+
+		cpuUsagePercent := int(cpuUsageFloat)
+
+		if cpuUsagePercent > cpuUsageThreshold {
+			logSimplified("Health Deterioration: CPU usage exceeded threshold", "Current Usage", cpuUsagePercentStr)
+		}
+
 		if err := r.Client.Update(ctx, vaultData); err != nil {
 			logger.Error(err, "Failed to update VaultData")
 			return err
 		}
-		logger.Info("VaultData CPU Usage updated to " + vaultData.Spec.VaultCPUUsage)
+		logSimplified("VaultData CPU Usage updated to " + vaultData.Spec.VaultCPUUsage)
+		r.updatePrometheusLabels(vaultData)
 	}
 
 	if vaultData.Spec.VaultReplicas != deployment.Status.Replicas {
@@ -495,7 +614,9 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 			logger.Error(err, "Failed to update VaultData")
 			return err
 		}
-		logger.Info("VaultData Replicas updated to " + string(vaultData.Spec.VaultReplicas))
+		logSimplified("VaultData Replicas updated to " + string(vaultData.Spec.VaultReplicas))
+		r.updatePrometheusLabels(vaultData)
+
 	}
 
 	if vaultData.Spec.VaultImage != deployment.Spec.Template.Spec.Containers[0].Image {
@@ -504,10 +625,162 @@ func (r *VaultMonReconciler) createOrUpdateVaultMonCRD(clientset *kubernetes.Cli
 			logger.Error(err, "Failed to update VaultData")
 			return err
 		}
-		logger.Info("VaultData Image updated to " + vaultData.Spec.VaultImage)
+		logSimplified("VaultData Image updated to " + vaultData.Spec.VaultImage)
+		r.updatePrometheusLabels(vaultData)
+	}
+
+	if vaultData.Spec.VaultVersion != image.Spec.Containers[0].Image {
+		vaultData.Spec.VaultVersion = image.Spec.Containers[0].Image
+		if err := r.Client.Update(ctx, vaultData); err != nil {
+			logger.Error(err, "Failed to update VaultData")
+			return err
+		}
+		logSimplified("VaultData Version updated to " + vaultData.Spec.VaultVersion)
+		r.updatePrometheusLabels(vaultData)
+	}
+
+	if vaultData.Spec.VaultIngress != vaultIngress {
+		vaultData.Spec.VaultIngress = vaultIngress
+		if err := r.Client.Update(ctx, vaultData); err != nil {
+			logger.Error(err, "Failed to update VaultData")
+			return err
+		}
+		// if vaultData.Spec.VaultIngress.Spec.DefaultBackend != nil {
+		// 	serviceName := vaultData.Spec.VaultIngress.Spec.DefaultBackend.Service.Name
+		// 	servicePort := vaultData.Spec.VaultIngress.Spec.DefaultBackend.Service.Port.Number
+
+		// 	logSimplified("VAULT_INGRESS_NAME=" + serviceName)
+		// 	logSimplified("VAULT_INGRESS_SERVICE_PORT=" + strconv.Itoa(int(servicePort)))
+		// }
+		r.updatePrometheusLabels(vaultData)
+	}
+
+	if !reflect.DeepEqual(vaultData.Spec.VaultLabels, deployment.Labels) {
+		//check if labels are added or removed or modified
+		for key, value := range vaultData.Spec.VaultLabels {
+			if depValue, ok := deployment.Labels[key]; ok {
+				if depValue != value {
+					logSimplified("Label modified", "Old Label", key+"="+value, "New Label", key+"="+depValue)
+				}
+			} else {
+				logSimplified("Label removed", "Label", key+"="+value)
+			}
+		}
+		for key, value := range deployment.Labels {
+			if vaultValue, ok := vaultData.Spec.VaultLabels[key]; !ok {
+				logSimplified("Label added", "Label", key+"="+value)
+			} else {
+				if vaultValue != value {
+					logSimplified("Label modified", "Old Label", key+"="+vaultValue, "New Label", key+"="+value)
+				}
+			}
+		}
+
+		vaultData.Spec.VaultLabels = deployment.Labels
+		if err := r.Client.Update(ctx, vaultData); err != nil {
+			logger.Error(err, "Failed to update VaultData")
+			return err
+		}
+		logSimplified("VaultData Labels updated to:")
+		for key, value := range vaultData.Spec.VaultLabels {
+			logSimplified(key + "=" + value)
+		}
+		r.updatePrometheusLabels(vaultData)
+	}
+
+	if !reflect.DeepEqual(vaultData.Spec.VaultAnnotations, deployment.Spec.Template.Annotations) {
+		for key, value := range vaultData.Spec.VaultAnnotations {
+			if depValue, ok := deployment.Spec.Template.Annotations[key]; ok {
+				if depValue != value {
+					logSimplified("Annotation modified", "Old Annotation", key+"="+value, "New Annotation", key+"="+depValue)
+				}
+			} else {
+				logSimplified("Annotation removed", "Annotation", key+"="+value)
+			}
+		}
+		for key, value := range deployment.Spec.Template.Annotations {
+			if vaultValue, ok := vaultData.Spec.VaultAnnotations[key]; !ok {
+				logSimplified("Annotation added", "Annotation", key+"="+value)
+			} else {
+				if vaultValue != value {
+					logSimplified("Annotation modified", "Old Annotation", key+"="+vaultValue, "New Annotation", key+"="+value)
+				}
+			}
+		}
+
+		vaultData.Spec.VaultAnnotations = deployment.Spec.Template.Annotations
+		if err := r.Client.Update(ctx, vaultData); err != nil {
+			logger.Error(err, "Failed to update VaultData")
+			return err
+		}
+		logSimplified("VaultData Annotations updated to:")
+		for key, value := range vaultData.Spec.VaultAnnotations {
+			logSimplified(key + "=" + value)
+		}
+		r.updatePrometheusLabels(vaultData)
 	}
 
 	return nil
+}
+
+func (r *VaultMonReconciler) updatePrometheusLabels(vaultData *rossoperatoriov1alpha1.VaultMon) {
+
+	vaultStatuses := make([]string, len(vaultData.Spec.VaultStatus))
+	for i, status := range vaultData.Spec.VaultStatus {
+		vaultStatuses[i] = fmt.Sprintf("ContainerName=%s,Ready=%t,Liveness=%t", status.Name, status.Ready, status.State.Running != nil)
+	}
+	serviceName := ""
+	servicePort := 0
+	if vaultData.Spec.VaultIngress.Spec.DefaultBackend != nil {
+		serviceName = vaultData.Spec.VaultIngress.Spec.DefaultBackend.Service.Name
+		servicePort = int(vaultData.Spec.VaultIngress.Spec.DefaultBackend.Service.Port.Number)
+	}
+
+	vaultStatusStr := strings.Join(vaultStatuses, ";")
+
+	timestamp := time.Now().Format(time.RFC3339)
+	r.VaultMetrics.VaultInfo.With(prometheus.Labels{
+		"vaultName":      vaultData.Spec.VaultName,
+		"vaultUid":       vaultData.Spec.VaultUid,
+		"vaultNamespace": vaultData.Spec.VaultNamespace,
+		"vaultIp":        vaultData.Spec.VaultIp,
+		"vaultImage":     vaultData.Spec.VaultImage,
+		"vaultStatus":    vaultStatusStr,
+		"vaultReplicas":  strconv.Itoa(int(vaultData.Spec.VaultReplicas)),
+		"vaultIngress":   serviceName + ":" + strconv.Itoa(int(servicePort)),
+		"vaultVolumes":   volumeSliceToString(vaultData.Spec.VaultVolumes),
+		"vaultEndpoints": fmt.Sprintf("%v", vaultData.Spec.VaultEndpoints),
+		"timestamp":      timestamp,
+	}).Set(1)
+
+	vaultCPU, err := strconv.ParseFloat(vaultData.Spec.VaultCPUUsage, 64)
+	if err != nil {
+		logSimplified("Error parsing VaultCPUUsage")
+	}
+
+	vaultMem, err := strconv.ParseFloat(vaultData.Spec.VaultMemUsage, 64)
+	if err != nil {
+		logSimplified("Error parsing VaultMemUsage")
+	}
+
+	r.VaultMetrics.VaultCPUUsage.With(prometheus.Labels{
+		"vaultName":      vaultData.Spec.VaultName,
+		"vaultNamespace": vaultData.Spec.VaultNamespace,
+	}).Set(vaultCPU)
+
+	r.VaultMetrics.VaultMemUsage.With(prometheus.Labels{
+		"vaultName":      vaultData.Spec.VaultName,
+		"vaultNamespace": vaultData.Spec.VaultNamespace,
+	}).Set(vaultMem)
+
+}
+
+func volumeSliceToString(volumes []corev1.Volume) string {
+	volumeStrings := make([]string, len(volumes))
+	for i, v := range volumes {
+		volumeStrings[i] = fmt.Sprintf("Name=%s", v.Name)
+	}
+	return strings.Join(volumeStrings, ";")
 }
 
 // manages the finalizers for the Vault CRD.
@@ -564,12 +837,21 @@ func (r *VaultMonReconciler) manageFinalizers(ctx context.Context, u *unstructur
 func logSimplified(message string, keyValuePairs ...interface{}) {
 	logger := ctrl.Log
 
+	if len(keyValuePairs) == 0 {
+		logger.Info(message)
+		return
+	}
+
 	keys := make([]interface{}, 0, len(keyValuePairs)/2)
 	values := make([]interface{}, 0, len(keyValuePairs)/2)
 
 	for i := 0; i < len(keyValuePairs); i += 2 {
 		keys = append(keys, keyValuePairs[i])
-		values = append(values, keyValuePairs[i+1])
+		if i+1 < len(keyValuePairs) {
+			values = append(values, keyValuePairs[i+1])
+		} else {
+			values = append(values, nil) // or some default value
+		}
 	}
 
 	msg := message

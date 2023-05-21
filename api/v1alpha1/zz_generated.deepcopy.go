@@ -23,6 +23,7 @@ package v1alpha1
 
 import (
 	"k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -95,6 +96,13 @@ func (in *VaultMonSpec) DeepCopyInto(out *VaultMonSpec) {
 			(*out)[key] = val
 		}
 	}
+	if in.VaultAnnotations != nil {
+		in, out := &in.VaultAnnotations, &out.VaultAnnotations
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	if in.VaultEndpoints != nil {
 		in, out := &in.VaultEndpoints, &out.VaultEndpoints
 		*out = make([]string, len(*in))
@@ -113,6 +121,11 @@ func (in *VaultMonSpec) DeepCopyInto(out *VaultMonSpec) {
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
+	}
+	if in.VaultIngress != nil {
+		in, out := &in.VaultIngress, &out.VaultIngress
+		*out = new(networkingv1.Ingress)
+		(*in).DeepCopyInto(*out)
 	}
 }
 

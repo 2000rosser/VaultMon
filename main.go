@@ -39,8 +39,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	// "k8s.io/client-go/tools/cache"
-	//import the metrics package
+
+	"github.com/shirou/gopsutil/cpu"
+	"github.com/shirou/gopsutil/mem"
 )
 
 var (
@@ -55,12 +56,39 @@ func init() {
 	//+kubebuilder:scaffold:scheme
 }
 
+type CustomCollector struct {
+	cpuUsage *prometheus.Desc
+	memUsage *prometheus.Desc
+}
+
+func NewCustomCollector() *CustomCollector {
+	return &CustomCollector{
+		cpuUsage: prometheus.NewDesc("cpu_usage", "CPU usage", nil, nil),
+		memUsage: prometheus.NewDesc("memory_usage", "Memory usage", nil, nil),
+	}
+}
+
+func (collector *CustomCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- collector.cpuUsage
+	ch <- collector.memUsage
+}
+
+func (collector *CustomCollector) Collect(ch chan<- prometheus.Metric) {
+	v, _ := mem.VirtualMemory()
+	ch <- prometheus.MustNewConstMetric(collector.memUsage, prometheus.GaugeValue, v.UsedPercent)
+
+	c, _ := cpu.Percent(0, false)
+	if len(c) > 0 {
+		ch <- prometheus.MustNewConstMetric(collector.cpuUsage, prometheus.GaugeValue, c[0])
+	}
+}
+
 func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
 	var probeAddr string
 	var customMetricsEndpoint string
-	flag.StringVar(&customMetricsEndpoint, "custom-metrics-endpoint", "/vaultmonmetrics", "The custom metrics endpoint path.")
+	flag.StringVar(&customMetricsEndpoint, "custom-metrics-endpoint", "/metrics", "The custom metrics endpoint path.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -81,17 +109,6 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "38601c6c.rossoperator.io",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -102,6 +119,9 @@ func main() {
 	// registry.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
 	// registry.MustRegister(prometheus.NewGoCollector())
 
+	customCollector := NewCustomCollector()
+	registry.MustRegister(customCollector)
+
 	go func() {
 		http.Handle(customMetricsEndpoint, promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 		if err := http.ListenAndServe(":8005", nil); err != nil {
@@ -109,11 +129,6 @@ func main() {
 			os.Exit(1)
 		}
 	}()
-
-	// if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-	// 	setupLog.Error(err, "problem running manager")
-	// 	os.Exit(1)
-	// }
 
 	vaultMetrics := controllers.NewVaultMonMetrics(registry)
 

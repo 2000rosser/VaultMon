@@ -1,4 +1,3 @@
-# vaultmon
 # Custom Kubernetes Operator for Secrets Management Service
 
 # Readme.md
@@ -11,11 +10,32 @@
 | **Project Supervisor** | Prof. Tahar Kechadi |
 | **Project Title** | Custom Kubernetes Operator for Secrets Management Service |
 # About
+This project aims to create a custom operator designed to monitor and manage Vault Custom Resource Definitions (CRDs) within a Kubernetes environment. The operator performs functions like tracking changes to Vault CRDs, monitoring the health status of the replica set, logging the destruction of Vault CRDs, and detecting anomalies. By providing comprehensive Vault monitoring, this operator ensures efficient implementation and effective operation.
 # Details
+The main functions of the custom Vault operator include:
 
+- Tracking all Vault CRDs with a unique identifier and logging these identifiers.
+- Capturing and persisting details of each Vault CRD, such as namespace, labels, annotations, IPs, replicas, endpoints, pod status, volumes, and ingress.
+- Logging changes made to the Vault CRDs, like an increase in replica count, changes in memory or CPU, changes in image or version, and changes in ingress.
+- Monitoring the health of the replica set, with the capability to detect when health is deteriorating.
+- Logging the destruction of Vault CRDs.
+- Providing a method for querying the operator data
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+The VaultMon Operator is a custom Kubernetes operator created with a focus on providing a comprehensive solution for monitoring and managing Vault Custom Resource Definitions (CRDs).
+
+The operator is designed to keep a log of all Vault CRDs, capturing details like namespace, labels, annotations, IPs, replicas, endpoints, pod status, volumes, and ingress. This data is logged and can be queried, providing you with easy access to granular information about your Vault CRDs.
+
+In addition to logging details, the VaultMon Operator actively monitors changes made to your Vault CRDs. Whether there's an increase in the replica count, changes in memory, CPU usage, image or version, or ingress, the operator is equipped to track these modifications and keep you informed.
+
+The VaultMon Operator is also programmed to continuously monitor the health of the replica set. It alerts you if there are any issues such as a deterioration in CPU and memory usage or changes in Pod statuses. The operator also logs the destruction of Vault CRDs, offering an audit trail for your Vault CRDs lifecycle.
+
+The custom operator is built using the OperatorSDK, providing a streamlined build, test, and deployment process. The operator employs a Custom Resource Definition (CRD) to store Vault-related data and a controller for interacting with the Kubernetes cluster and performing logging operations.
+
+One of the key features of VaultMon Operator is the implementation of metrics. The operator uses the Prometheus package to expose these metrics through an endpoint using PromQL syntax. These metrics can then be scraped and visualized using Prometheus and Grafana or any visualization tool that supports a Prometheus endpoint.
+
+In summary, the VaultMon Operator offers a solution for managing Vault CRDs in Kubernetes. Its features include logging, tracking, health monitoring, and data querying capabilities, offering a comprehensive toolset to enhance the efficiency and effectiveness of your Vault monitoring processes.
+
 
 ## Getting Started
 You’ll need a Kubernetes cluster to run against. You can use [KIND](https://sigs.k8s.io/kind) to get a local cluster for testing, or run against a remote cluster.
@@ -55,7 +75,12 @@ make undeploy
 ```
 
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
+I would like to sincerely thank Prof. Tahar Kechadi, my supervisor, for his valuable guidance and
+insights in planning and report writing. His support has been fundamental to this project. I also
+want to express my gratitude to Mr. Arun Thundyill Saseendran from VMware. His technical
+knowledge and insightful feedback have significantly enhanced the quality of this work. Their
+contributions have been invaluable, and I am deeply grateful for their support.
+
 
 ### How it works
 This project aims to follow the Kubernetes [Operator pattern](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)

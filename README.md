@@ -36,14 +36,6 @@ One of the key features of VaultMon Operator is the implementation of metrics. T
 
 In summary, the VaultMon Operator offers a solution for managing Vault CRDs in Kubernetes. Its features include logging, tracking, health monitoring, and data querying capabilities, offering a comprehensive toolset to enhance the efficiency and effectiveness of your Vault monitoring processes.
 
-## Pre System State
-It is important to understand what I have implemented myself as part of this project and what the OperatorSDK has built. The Operator SDK supplied the initial project skeleton and some basic starting code. This code included an initialization file (main.go) and a basic controller file (vaultmon_controller.go). These files served as a starting point for the operator's development. The Operator SDK also helped keep the project well-organized by following Go project layout standards, enhancing the project's readability and maintainability.
-
-An important part of the Operator SDK is the scaffolding it provided for the Custom Resource Definitions (CRDs) and the controllers. CRDs allow the extension of the Kubernetes API, and the Operator SDK assisted in generating the basic code for the CRDs, found in vaultmon_types.go files (converting Go to yaml). The SDK also provided the scaffolding to create new controllers, which manage the reconciliation loop for the CRDs. This scaffolding served as a basis for the creation of the vaultmon_controller.go.
-
-The SDK also came with libraries that enable interaction with the Kubernetes API. These libraries facilitate easier creation, updating, deletion, and fetching of Kubernetes resources programmatically. Additionally, the SDK included tools to build and push the operator image, generate a deployment manifest, and deploy the operator to a Kubernetes cluster.
-
-While the Operator SDK laid a significant foundation, the core functionalities and logic of the operator were implemented independently. This includes the creation of a metrics.go file and the formulation of logic to manage Vault deployments. The core implementation of this project was completed in the vaultmon_types.go, vaultmon_controller.go, main.go and metrics.go files. Other files may also have been slightly modified/configured to work for this specific case.
 
 ## Getting Started
 You’ll need a Kubernetes cluster to run against. You can use [KIND](https://sigs.k8s.io/kind) to get a local cluster for testing, or run against a remote cluster.

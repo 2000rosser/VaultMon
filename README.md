@@ -1,14 +1,4 @@
 # Custom Kubernetes Operator for Secrets Management Service
-
-# Readme.md
-# Project Details
-| Project Details | |
-| --- | --- |
-| **Course** | Computer Science |
-| **Module** | UCD COMP30900 Final Year Project Foundations |
-| **Student** | Ross Murphy 20207271 |
-| **Project Supervisor** | Prof. Tahar Kechadi |
-| **Project Title** | Custom Kubernetes Operator for Secrets Management Service |
 # About
 This project aims to create a custom operator designed to monitor and manage Vault Custom Resource Definitions (CRDs) within a Kubernetes environment. The operator performs functions like tracking changes to Vault CRDs, monitoring the health status of the replica set, logging the destruction of Vault CRDs, and detecting anomalies. By providing comprehensive Vault monitoring, this operator ensures efficient implementation and effective operation.
 # Details
